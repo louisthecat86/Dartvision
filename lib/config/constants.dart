@@ -35,7 +35,7 @@ class AppConstants {
 
   // ──────────────── Gemini Modell ────────────────
   // gemini-1.5-flash-8b: 1.500 kostenlose Anfragen/Tag, ideal für Bildanalyse
-  static const String geminiModel = 'gemini-1.5-flash-8b';
+   static const String geminiModel = 'gemini-2.0-flash-lite';
 
   // ──────────────── Standard-Erkennungsprompt (ohne Kalibrierung) ────────────────
   static const String detectionPrompt = '''
