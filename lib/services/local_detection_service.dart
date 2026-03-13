@@ -68,7 +68,6 @@ class MotionRegion {
 class LocalDetectionService {
   static const int _sampleSize = 80;
   static const double _motionThreshold = 12.0;
-  static const double _centerWeightFactor = 1.5;
 
   BoardCalibration? _calibration;
   Uint8List? _referenceFrame;

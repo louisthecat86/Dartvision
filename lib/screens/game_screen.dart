@@ -4,12 +4,11 @@ import 'package:provider/provider.dart';
 import '../config/constants.dart';
 import '../config/theme.dart';
 import '../providers/game_provider.dart';
-import '../providers/settings_provider.dart';
 import '../widgets/dartboard_input_widget.dart';
 import '../widgets/scoreboard_widget.dart';
 import '../widgets/cricket_scoreboard_widget.dart';
 import '../widgets/generic_scoreboard_widget.dart';
-import 'camera_screen.dart';
+import 'stream_camera_screen.dart';
 import 'home_screen.dart';
 import 'game_setup_screen.dart';
 
@@ -132,8 +131,7 @@ class _GameScreenState extends State<GameScreen> {
   }
 
   Widget _buildInputToggle() {
-    final hasApiKey = true; // Kamera immer verfügbar – kein API-Key nötig
-    return Padding(
+        return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       child: Row(
         children: [
@@ -147,9 +145,7 @@ class _GameScreenState extends State<GameScreen> {
           Expanded(
             child: _buildToggleBtn(
               'Kamera', Icons.camera_alt_rounded, !_showManualInput,
-              hasApiKey
-                  ? () => setState(() => _showManualInput = false)
-                  : null,
+              () => setState(() => _showManualInput = false),
             ),
           ),
         ],
