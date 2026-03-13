@@ -18,7 +18,6 @@ class AppConstants {
   static const String gameHighScore = 'High Score';
   static const String gameDoubleTraining = 'Double Training';
 
-  // Categories for display
   static const Map<String, List<String>> gameCategories = {
     'X01 (Klassisch)': [game301, game501, game701],
     'Cricket': [gameCricket, gameCutThroat],
@@ -29,51 +28,93 @@ class AppConstants {
   static List<String> get allGameTypes =>
       gameCategories.values.expand((v) => v).toList();
 
-  // Cricket numbers
   static const List<int> cricketNumbers = [20, 19, 18, 17, 16, 15];
-
-  // Max players
   static const int maxPlayers = 8;
-
-  // Max legs/sets
   static const int maxLegs = 11;
   static const int maxSets = 7;
 
-  // Gemini API
-  static const String geminiModel = 'gemini-2.0-flash';
+  // ──────────────── Gemini Modell ────────────────
+  // gemini-1.5-flash-8b: 1.500 kostenlose Anfragen/Tag, ideal für Bildanalyse
+  static const String geminiModel = 'gemini-1.5-flash-8b';
 
-  // Detection prompt for Gemini
+  // ──────────────── Standard-Erkennungsprompt (ohne Kalibrierung) ────────────────
   static const String detectionPrompt = '''
-Analyze this dartboard image carefully. Identify ALL darts visible on the board.
+You are analyzing a dartboard image taken from an angle (not necessarily straight on).
+The camera may be positioned to the side or below the board — this is normal and expected.
 
-For each dart, determine:
-1. The NUMBER segment (1-20) where the dart tip is located
-2. The RING type: "double" (outer narrow ring), "triple" (inner narrow ring), "single_outer" (large area between triple and double), "single_inner" (large area between triple and bull), "outer_bull" (green ring around bullseye), "inner_bull" (red center bullseye)
+Your task: Identify ALL darts currently stuck in the dartboard.
 
-IMPORTANT RULES:
-- Look at where the DART TIP touches the board, not the shaft
-- The board numbers clockwise from top: 20, 1, 18, 4, 13, 6, 10, 15, 2, 17, 3, 19, 7, 16, 8, 11, 14, 9, 12, 5
-- If no darts are visible, return an empty array
-- Be precise about double vs triple rings - doubles are on the OUTER edge, triples are the INNER narrow ring
+IMPORTANT PERSPECTIVE NOTE:
+- The board may appear elliptical or skewed due to camera angle
+- Use the number markings visible around the board edge to determine segment positions
+- Focus on where the DART TIP/POINT enters the board, not the shaft direction
+- A dart viewed from the side will show the shaft at an angle — still identify the tip location
 
-Respond ONLY with valid JSON in this exact format, no other text:
+For each dart found, determine:
+1. NUMBER segment (1-20, or 25 for bull area)
+2. RING type:
+   - "inner_bull" = red center circle (50 points)
+   - "outer_bull" = green ring around center (25 points)  
+   - "triple" = narrow inner ring (worth 3x)
+   - "double" = narrow outer ring at board edge (worth 2x)
+   - "single_inner" = large area between triple and bull
+   - "single_outer" = large area between triple and double
+
+Board number order clockwise from top: 20, 1, 18, 4, 13, 6, 10, 15, 2, 17, 3, 19, 7, 16, 8, 11, 14, 9, 12, 5
+
+Respond ONLY with valid JSON, no other text:
 {
   "darts": [
-    {"segment": <number 1-20 or 25 for bull/bullseye>, "ring": "<ring_type>", "confidence": <0.0-1.0>}
+    {"segment": <1-20 or 25>, "ring": "<ring_type>", "confidence": <0.0-1.0>}
   ],
   "board_detected": true/false,
   "total_darts": <number>
 }
 ''';
 
-  // Game descriptions
+  // ──────────────── Kalibrierter Prompt (mit Referenzbild) ────────────────
+  static const String calibrationPromptPrefix = '''
+I will show you TWO images of a dartboard:
+IMAGE 1 (below) is the REFERENCE — the EMPTY board with NO darts, taken from your camera position.
+Use this reference to understand the board's exact orientation, perspective, segment layout, and lighting from this specific angle.
+''';
+
+  static const String calibrationPromptSuffix = '''
+IMAGE 2 (below) is the CURRENT state — the SAME board with darts thrown.
+Using the reference image to understand the board geometry and perspective, identify ALL darts in IMAGE 2.
+
+The camera angle is fixed (same position as reference). Use the reference to precisely map segment boundaries.
+
+For each dart, determine:
+1. NUMBER segment (1-20, or 25 for bull area) — compare with reference board layout
+2. RING type: "inner_bull", "outer_bull", "triple", "double", "single_inner", "single_outer"
+
+Board numbers clockwise from top: 20, 1, 18, 4, 13, 6, 10, 15, 2, 17, 3, 19, 7, 16, 8, 11, 14, 9, 12, 5
+
+Respond ONLY with valid JSON, no other text:
+{
+  "darts": [
+    {"segment": <1-20 or 25>, "ring": "<ring_type>", "confidence": <0.0-1.0>}
+  ],
+  "board_detected": true/false,
+  "total_darts": <number>
+}
+''';
+
+  // ──────────────── Kalibrierungsprüfung ────────────────
+  static const String boardCheckPrompt = '''
+Look at this image. Is a dartboard clearly visible?
+Answer ONLY with JSON: {"board_visible": true/false, "quality": "good"|"dark"|"blurry"|"partial"}
+''';
+
+  // ──────────────── Spielbeschreibungen ────────────────
   static const Map<String, String> gameDescriptions = {
     game301: 'Von 301 auf 0 – Double Out.',
     game501: 'Von 501 auf 0 – Double Out.',
     game701: 'Von 701 auf 0 – Double Out.',
     gameCricket: 'Schließe 15–20 & Bull, sammle Punkte.',
     gameCutThroat: 'Cricket – aber Punkte gehen an Gegner!',
-    gameAroundTheClock: 'Treffe 1 bis 20 der Reihe nach.',
+    gameAroundTheClock: 'Triff 1 bis 20 der Reihe nach.',
     gameShanghai: 'Pro Runde ein Ziel (1–7). Shanghai = sofort gewonnen.',
     gameKiller: 'Triff dein Double um Killer zu werden, dann eliminiere andere.',
     gameBobs27: 'Training: Triff jedes Double für Punkte, oder verliere das Doppelte.',
@@ -81,65 +122,39 @@ Respond ONLY with valid JSON in this exact format, no other text:
     gameDoubleTraining: 'Trainiere alle 20 Doubles + Bull. Treffquote zählt.',
   };
 
-  // Min players per game
   static const Map<String, int> minPlayers = {
-    game301: 1,
-    game501: 1,
-    game701: 1,
-    gameCricket: 2,
-    gameCutThroat: 3,
-    gameAroundTheClock: 1,
-    gameShanghai: 2,
-    gameKiller: 3,
-    gameBobs27: 1,
-    gameHighScore: 1,
-    gameDoubleTraining: 1,
+    game301: 1, game501: 1, game701: 1,
+    gameCricket: 2, gameCutThroat: 3,
+    gameAroundTheClock: 1, gameShanghai: 2, gameKiller: 3,
+    gameBobs27: 1, gameHighScore: 1, gameDoubleTraining: 1,
   };
 }
 
+// ──────────────── RingType (unverändert) ────────────────
 enum RingType {
-  singleInner,
-  singleOuter,
-  double_,
-  triple,
-  outerBull,
-  innerBull,
-  miss;
+  singleInner, singleOuter, double_, triple, outerBull, innerBull, miss;
 
   String get displayName {
     switch (this) {
       case RingType.singleInner:
-      case RingType.singleOuter:
-        return 'Single';
-      case RingType.double_:
-        return 'Double';
-      case RingType.triple:
-        return 'Triple';
-      case RingType.outerBull:
-        return 'Bull';
-      case RingType.innerBull:
-        return 'Bullseye';
-      case RingType.miss:
-        return 'Miss';
+      case RingType.singleOuter: return 'Single';
+      case RingType.double_: return 'Double';
+      case RingType.triple: return 'Triple';
+      case RingType.outerBull: return 'Bull';
+      case RingType.innerBull: return 'Bullseye';
+      case RingType.miss: return 'Miss';
     }
   }
 
   static RingType fromString(String s) {
     switch (s.toLowerCase()) {
-      case 'double':
-        return RingType.double_;
-      case 'triple':
-        return RingType.triple;
-      case 'single_inner':
-        return RingType.singleInner;
-      case 'single_outer':
-        return RingType.singleOuter;
-      case 'outer_bull':
-        return RingType.outerBull;
-      case 'inner_bull':
-        return RingType.innerBull;
-      default:
-        return RingType.miss;
+      case 'double': return RingType.double_;
+      case 'triple': return RingType.triple;
+      case 'single_inner': return RingType.singleInner;
+      case 'single_outer': return RingType.singleOuter;
+      case 'outer_bull': return RingType.outerBull;
+      case 'inner_bull': return RingType.innerBull;
+      default: return RingType.miss;
     }
   }
 }
