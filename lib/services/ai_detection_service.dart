@@ -60,13 +60,74 @@ class AiDetectionService {
     );
   }
 
-  /// Analysiert die Bildqualität (Helligkeit, Unschärfe) ohne API-Aufruf.
+  /// Prüft ob sich das Bild gegenüber dem Referenzbild merklich verändert hat.
+  /// Gibt true zurück wenn eine Veränderung erkannt wurde (neuer Pfeil).
+  /// Wird OHNE API-Aufruf durchgeführt — spart Kontingent.
+  Future<bool> hasImageChanged(
+    Uint8List newBytes,
+    Uint8List baselineBytes,
+  ) async {
+    try {
+      final newImg = img.decodeImage(newBytes);
+      final baseImg = img.decodeImage(baselineBytes);
+      if (newImg == null || baseImg == null) return true;
+
+      // Auf gemeinsame kleine Größe skalieren für schnellen Vergleich
+      const sampleSize = 80;
+      final resNew = img.copyResize(newImg,
+          width: sampleSize,
+          height: sampleSize,
+          interpolation: img.Interpolation.average);
+      final resBase = img.copyResize(baseImg,
+          width: sampleSize,
+          height: sampleSize,
+          interpolation: img.Interpolation.average);
+
+      double totalDiff = 0;
+      double centerDiff = 0; // Mitte stärker gewichten (da Scheibe dort ist)
+      int count = 0;
+      int centerCount = 0;
+
+      for (int y = 0; y < sampleSize; y++) {
+        for (int x = 0; x < sampleSize; x++) {
+          final p1 = resNew.getPixel(x, y);
+          final p2 = resBase.getPixel(x, y);
+          final lum1 = 0.299 * p1.r.toDouble() +
+              0.587 * p1.g.toDouble() +
+              0.114 * p1.b.toDouble();
+          final lum2 = 0.299 * p2.r.toDouble() +
+              0.587 * p2.g.toDouble() +
+              0.114 * p2.b.toDouble();
+          final diff = (lum1 - lum2).abs();
+          totalDiff += diff;
+          count++;
+
+          // Mittlere 40% stärker auswerten (Scheibenbereich)
+          final cx = (x - sampleSize / 2).abs();
+          final cy = (y - sampleSize / 2).abs();
+          if (cx < sampleSize * 0.2 && cy < sampleSize * 0.2) {
+            centerDiff += diff;
+            centerCount++;
+          }
+        }
+      }
+
+      final avgDiff = count > 0 ? totalDiff / count : 0;
+      final avgCenterDiff = centerCount > 0 ? centerDiff / centerCount : 0;
+
+      // Änderung erkannt wenn: Gesamtdiff > 6 ODER Mitte-Diff > 10
+      return avgDiff > 6.0 || avgCenterDiff > 10.0;
+    } catch (_) {
+      return true; // Im Fehlerfall lieber analysieren
+    }
+  }
+
+  /// Analysiert Bildqualität ohne API-Aufruf.
   Future<ImageQuality> analyzeQuality(Uint8List bytes) async {
     try {
       final decoded = img.decodeImage(bytes);
       if (decoded == null) return const ImageQuality();
 
-      // Helligkeit berechnen (jedes 10. Pixel für Geschwindigkeit)
       double totalLum = 0;
       double totalSqLum = 0;
       int count = 0;
@@ -85,11 +146,9 @@ class AiDetectionService {
       }
 
       final avgLum = count > 0 ? totalLum / count : 128;
-
-      // Unschärfe: geringe Kontrastabweichung = unscharf
-      final variance = (count > 0 ? totalSqLum / count : 0) - avgLum * avgLum;
-      final isBlurry = variance < 200; // niedrige Varianz = wenig Kanten/Details
-
+      final variance =
+          (count > 0 ? totalSqLum / count : 0) - avgLum * avgLum;
+      final isBlurry = variance < 200;
       final isDark = avgLum < 45;
       final isBright = avgLum > 215;
 
@@ -125,7 +184,6 @@ class AiDetectionService {
       );
     }
 
-    // Qualität vorab prüfen
     final quality = await analyzeQuality(imageBytes);
     if (quality.isDark || quality.isBlurry) {
       return DetectionResult(
@@ -137,15 +195,12 @@ class AiDetectionService {
 
     try {
       final List<Part> parts = [];
-
       if (referenceImageBytes != null) {
-        // Mit Kalibrierungsbild: Vergleichsprompt
         parts.add(TextPart(AppConstants.calibrationPromptPrefix));
         parts.add(DataPart('image/jpeg', referenceImageBytes));
         parts.add(TextPart(AppConstants.calibrationPromptSuffix));
         parts.add(DataPart('image/jpeg', imageBytes));
       } else {
-        // Ohne Kalibrierungsbild: Standard-Prompt
         parts.add(TextPart(AppConstants.detectionPrompt));
         parts.add(DataPart('image/jpeg', imageBytes));
       }
@@ -156,10 +211,7 @@ class AiDetectionService {
 
       if (text == null || text.isEmpty) {
         return DetectionResult(
-          darts: [],
-          error: 'Keine Antwort von der KI erhalten.',
-          quality: quality,
-        );
+            darts: [], error: 'Keine Antwort von der KI.', quality: quality);
       }
 
       final result = _parseResponse(text);
@@ -174,7 +226,7 @@ class AiDetectionService {
       String userMsg;
       if (msg.contains('quota') || msg.contains('RESOURCE_EXHAUSTED')) {
         userMsg =
-            'Tageslimit erreicht. Morgen wieder verfügbar (1.500 Anfragen/Tag kostenlos).';
+            'Tageslimit erreicht (1.500/Tag kostenlos). Morgen wieder verfügbar.';
       } else if (msg.contains('API_KEY') || msg.contains('invalid')) {
         userMsg = 'Ungültiger API-Key. Bitte in den Einstellungen prüfen.';
       } else {
@@ -192,23 +244,18 @@ class AiDetectionService {
         cleaned = cleaned.replaceAll(RegExp(r'^```\w*\n?'), '');
         cleaned = cleaned.replaceAll(RegExp(r'\n?```$'), '');
       }
-
       final json = jsonDecode(cleaned) as Map<String, dynamic>;
       final boardDetected = json['board_detected'] as bool? ?? false;
       final dartsJson = json['darts'] as List<dynamic>? ?? [];
-
       final darts = dartsJson.map((d) {
         final dartMap = d as Map<String, dynamic>;
-        final segment = dartMap['segment'] as int;
-        final ringStr = dartMap['ring'] as String;
-        final confidence = (dartMap['confidence'] as num?)?.toDouble() ?? 0.5;
         return DartThrow(
-          segment: segment,
-          ring: RingType.fromString(ringStr),
-          confidence: confidence,
+          segment: dartMap['segment'] as int,
+          ring: RingType.fromString(dartMap['ring'] as String),
+          confidence:
+              (dartMap['confidence'] as num?)?.toDouble() ?? 0.5,
         );
       }).toList();
-
       return DetectionResult(darts: darts, boardDetected: boardDetected);
     } catch (e) {
       return DetectionResult(

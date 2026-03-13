@@ -93,7 +93,7 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
         return;
       }
 
-      // Speichern
+      // Als Datei speichern (nicht als Base64 in SharedPreferences)
       final settings = context.read<SettingsProvider>();
       await settings.setCalibrationImage(bytes);
 
