@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:provider/provider.dart';
 import 'package:vibration/vibration.dart';
+import '../config/constants.dart';
 import '../config/theme.dart';
 import '../models/dart_throw.dart';
 import '../providers/settings_provider.dart';

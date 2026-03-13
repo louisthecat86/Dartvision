@@ -109,7 +109,8 @@ class _BoardCalibrationScreenState extends State<BoardCalibrationScreen> {
     final cal = BoardCalibration(
       centerX: (_center!.dx / pw) * refW,
       centerY: (_center!.dy / ph) * refH,
-      radius: (_radius! / pw) * refW,
+      radiusX: (_radius! / pw) * refW,
+      radiusY: (_radius! / pw) * refW,
       imageWidth: refW.toInt(),
       imageHeight: refH.toInt(),
     );
