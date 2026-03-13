@@ -1,0 +1,133 @@
+name: Build & Release APK
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build APK
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.1'
+          channel: 'stable'
+          cache: true
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Analyze code
+        run: flutter analyze --no-fatal-infos
+        continue-on-error: true
+
+      # Decode keystore if release signing is configured
+      - name: Decode Keystore
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        run: |
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/release-keystore.jks
+            echo "KEYSTORE_PATH=$(pwd)/android/app/release-keystore.jks" >> $GITHUB_ENV
+            echo "KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}" >> $GITHUB_ENV
+            echo "KEY_ALIAS=${{ secrets.KEY_ALIAS }}" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> $GITHUB_ENV
+          fi
+
+      - name: Build APK (Release)
+        run: flutter build apk --release --split-per-abi
+
+      - name: Build universal APK
+        run: flutter build apk --release
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dartvision-apk
+          path: |
+            build/app/outputs/flutter-apk/app-release.apk
+            build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+            build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
+            build/app/outputs/flutter-apk/app-x86_64-release.apk
+          retention-days: 30
+
+      # Build AAB for Play Store (only on tags)
+      - name: Build AAB
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: flutter build appbundle --release
+
+      - name: Upload AAB artifact
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: dartvision-aab
+          path: build/app/outputs/bundle/release/app-release.aab
+          retention-days: 30
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download APK artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dartvision-apk
+          path: ./apk/
+
+      - name: Download AAB artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dartvision-aab
+          path: ./aab/
+
+      - name: Rename files
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          mv ./apk/app-release.apk "./apk/DartVision-${VERSION}-universal.apk" || true
+          mv ./apk/app-arm64-v8a-release.apk "./apk/DartVision-${VERSION}-arm64.apk" || true
+          mv ./apk/app-armeabi-v7a-release.apk "./apk/DartVision-${VERSION}-armv7.apk" || true
+          mv ./apk/app-x86_64-release.apk "./apk/DartVision-${VERSION}-x86_64.apk" || true
+          mv ./aab/app-release.aab "./aab/DartVision-${VERSION}.aab" || true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            ./apk/*.apk
+            ./aab/*.aab
+          body: |
+            ## DartVision ${{ github.ref_name }}
+            
+            ### Downloads
+            - **Universal APK** – für alle Android-Geräte
+            - **ARM64 APK** – für moderne Smartphones (empfohlen)
+            - **ARMv7 APK** – für ältere Geräte
+            - **AAB** – für Google Play Store Upload
+            
+            ### Installation
+            1. APK herunterladen
+            2. Auf dem Handy öffnen → "Installation aus unbekannten Quellen" erlauben
+            3. Installieren & Gemini API-Key in Einstellungen eingeben
