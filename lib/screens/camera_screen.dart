@@ -213,7 +213,7 @@ class _CameraScreenState extends State<CameraScreen> {
         if (isNew) {
           final settings = context.read<SettingsProvider>();
           if (settings.vibrationEnabled) {
-            final hasVib = await Vibration.hasVibrator() ?? false;
+            final hasVib = await Vibration.hasVibrator();
             if (hasVib) Vibration.vibrate(duration: 80);
           }
         }

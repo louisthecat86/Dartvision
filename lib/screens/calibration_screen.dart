@@ -1,10 +1,8 @@
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:provider/provider.dart';
-import '../config/constants.dart';
 import '../config/theme.dart';
 import '../providers/settings_provider.dart';
 import '../services/ai_detection_service.dart';
@@ -21,7 +19,6 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
   bool _isInitialized = false;
   bool _isCapturing = false;
   bool _flashOn = false;
-  String? _statusMessage;
   String? _errorMessage;
   bool _calibrationDone = false;
 
@@ -74,13 +71,12 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
     setState(() {
       _isCapturing = true;
       _errorMessage = null;
-      _statusMessage = 'Bild wird analysiert...';
     });
 
     try {
       final file = await _controller!.takePicture();
       final bytes = await File(file.path).readAsBytes();
-      await File(file.path).delete().catchError((_) {});
+      await File(file.path).delete().catchError((_) => File(file.path));
 
       // Qualität prüfen
       final quality = await _aiService.analyzeQuality(bytes);
@@ -88,7 +84,6 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
         setState(() {
           _errorMessage = quality.warning;
           _isCapturing = false;
-          _statusMessage = null;
         });
         return;
       }
