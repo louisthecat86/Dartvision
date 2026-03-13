@@ -1,7 +1,7 @@
 name: dart_scorer
-description: AI-powered Dart Board Tracker with camera detection
+description: AI-powered Dart Board Tracker with local camera detection
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.1.0+2
 
 environment:
   sdk: '>=3.2.0 <4.0.0'
@@ -10,7 +10,6 @@ dependencies:
   flutter:
     sdk: flutter
   camera: ^0.11.0+2
-  google_generative_ai: ^0.4.6
   provider: ^6.1.2
   shared_preferences: ^2.3.4
   path_provider: ^2.1.4

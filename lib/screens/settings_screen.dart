@@ -2,31 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../config/theme.dart';
 import '../providers/settings_provider.dart';
+import 'board_calibration_screen.dart';
 
-class SettingsScreen extends StatefulWidget {
+class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
-
-  @override
-  State<SettingsScreen> createState() => _SettingsScreenState();
-}
-
-class _SettingsScreenState extends State<SettingsScreen> {
-  late TextEditingController _apiKeyController;
-  bool _showApiKey = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _apiKeyController = TextEditingController(
-      text: context.read<SettingsProvider>().apiKey,
-    );
-  }
-
-  @override
-  void dispose() {
-    _apiKeyController.dispose();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -39,23 +18,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           return ListView(
             padding: const EdgeInsets.all(20),
             children: [
-              // AI Section
-              _buildSectionHeader('KI-Konfiguration', Icons.smart_toy_rounded),
+              // Kalibrierung
+              _buildSectionHeader('Kamera-Kalibrierung', Icons.tune_rounded),
               const SizedBox(height: 12),
-              _buildApiKeyCard(settings),
-              const SizedBox(height: 8),
-              Text(
-                'Hole dir einen kostenlosen API-Key unter:\nhttps://aistudio.google.com/apikey',
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: AppColors.textMuted,
-                      fontSize: 12,
-                    ),
-              ),
+              _buildCalibrationCard(context, settings),
 
               const SizedBox(height: 32),
 
-              // Game defaults
-              _buildSectionHeader('Spieleinstellungen', Icons.tune_rounded),
+              // Spieleinstellungen
+              _buildSectionHeader('Spieleinstellungen', Icons.sports_rounded),
               const SizedBox(height: 12),
               _buildSwitchTile(
                 'Double Out (Standard)',
@@ -72,8 +43,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
               const SizedBox(height: 32),
 
-              // About
-              _buildSectionHeader('Über', Icons.info_outline_rounded),
+              // Sound & Vibration
+              _buildSectionHeader('Audio & Haptik', Icons.vibration_rounded),
+              const SizedBox(height: 12),
+              _buildSwitchTile(
+                'Vibration',
+                'Vibriert wenn ein Pfeil erkannt wird',
+                settings.vibrationEnabled,
+                settings.setVibrationEnabled,
+              ),
+
+              const SizedBox(height: 32),
+
+              // Über
+              _buildSectionHeader('Über DartVision', Icons.info_outline_rounded),
               const SizedBox(height: 12),
               const Card(
                 child: Padding(
@@ -82,24 +65,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'DartVision v1.0.0',
+                        'DartVision v1.1.0',
                         style: TextStyle(
                           fontWeight: FontWeight.w700,
                           color: AppColors.textPrimary,
                         ),
                       ),
-                      SizedBox(height: 4),
+                      SizedBox(height: 8),
                       Text(
-                        'KI-gesteuerter Dart Tracker.\n'
-                        'Nutzt Google Gemini für die Darterkennung.\n\n'
+                        '✓ Lokale Dart-Erkennung – kein API-Key nötig\n'
+                        '✓ Kein Kamera-Freeze – kontinuierlicher Stream\n'
+                        '✓ Offline-fähig – funktioniert ohne Internet\n'
+                        '✓ Keine Tageslimits\n\n'
                         'Spielmodi: 501, 301, 701, Cricket, Cut Throat,\n'
                         'Around the Clock, Shanghai, Killer, Bob\'s 27,\n'
-                        'High Score, Double Training\n'
-                        'Manuelle & Kamera-Eingabe mit KI-Korrektur',
+                        'High Score, Double Training',
                         style: TextStyle(
                           color: AppColors.textSecondary,
                           fontSize: 13,
-                          height: 1.5,
+                          height: 1.6,
                         ),
                       ),
                     ],
@@ -131,80 +115,74 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Widget _buildApiKeyCard(SettingsProvider settings) {
+  Widget _buildCalibrationCard(
+      BuildContext context, SettingsProvider settings) {
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Google Gemini API-Key',
-              style: TextStyle(
-                fontWeight: FontWeight.w600,
-                color: AppColors.textPrimary,
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _apiKeyController,
-              obscureText: !_showApiKey,
-              decoration: InputDecoration(
-                hintText: 'AIzaSy...',
-                suffixIcon: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    IconButton(
-                      icon: Icon(
-                        _showApiKey
-                            ? Icons.visibility_off
-                            : Icons.visibility,
-                        size: 20,
-                      ),
-                      onPressed: () =>
-                          setState(() => _showApiKey = !_showApiKey),
-                    ),
-                    IconButton(
-                      icon:
-                          const Icon(Icons.save_rounded, size: 20),
-                      onPressed: () {
-                        settings.setApiKey(_apiKeyController.text.trim());
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('API-Key gespeichert'),
-                            backgroundColor: AppColors.primary,
-                          ),
-                        );
-                      },
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 8),
             Row(
               children: [
                 Icon(
-                  settings.hasApiKey
-                      ? Icons.check_circle
-                      : Icons.error_outline,
-                  size: 14,
-                  color: settings.hasApiKey
+                  settings.hasBoardCalibration
+                      ? Icons.check_circle_rounded
+                      : Icons.radio_button_unchecked,
+                  color: settings.hasBoardCalibration
                       ? AppColors.primary
-                      : AppColors.accentOrange,
+                      : AppColors.textMuted,
+                  size: 18,
                 ),
-                const SizedBox(width: 6),
+                const SizedBox(width: 8),
                 Text(
-                  settings.hasApiKey
-                      ? 'API-Key konfiguriert'
-                      : 'Kein API-Key gesetzt',
+                  settings.hasBoardCalibration
+                      ? 'Board kalibriert'
+                      : 'Noch nicht kalibriert',
                   style: TextStyle(
-                    fontSize: 12,
-                    color: settings.hasApiKey
+                    fontWeight: FontWeight.w600,
+                    color: settings.hasBoardCalibration
                         ? AppColors.primary
-                        : AppColors.accentOrange,
+                        : AppColors.textSecondary,
                   ),
                 ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Die Kalibrierung ermöglicht präzise Segment-Erkennung. '
+              'Einmal kalibrieren, dann automatische Dart-Erkennung ohne API.',
+              style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) => const BoardCalibrationScreen()),
+                    ),
+                    icon: const Icon(Icons.camera_alt_rounded, size: 16),
+                    label: Text(settings.hasBoardCalibration
+                        ? 'Neu kalibrieren'
+                        : 'Jetzt kalibrieren'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppColors.primary,
+                      side: const BorderSide(color: AppColors.primary),
+                    ),
+                  ),
+                ),
+                if (settings.hasBoardCalibration) ...[
+                  const SizedBox(width: 8),
+                  IconButton(
+                    icon: const Icon(Icons.delete_outline,
+                        color: AppColors.accent, size: 20),
+                    onPressed: () => settings.clearBoardCalibration(),
+                    tooltip: 'Kalibrierung löschen',
+                  ),
+                ],
               ],
             ),
           ],

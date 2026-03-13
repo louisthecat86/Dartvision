@@ -1,18 +1,17 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:typed_data';
-import '../config/constants.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:provider/provider.dart';
 import 'package:vibration/vibration.dart';
 import '../config/theme.dart';
+import '../config/constants.dart';
 import '../models/dart_throw.dart';
 import '../providers/settings_provider.dart';
-import '../services/ai_detection_service.dart';
+import '../services/local_detection_service.dart';
 import '../widgets/dart_edit_sheet.dart';
-import 'calibration_screen.dart';
+import 'board_calibration_screen.dart';
 
 class CameraScreen extends StatefulWidget {
   final void Function(List<DartThrow> darts) onDartsDetected;
@@ -23,46 +22,45 @@ class CameraScreen extends StatefulWidget {
   State<CameraScreen> createState() => _CameraScreenState();
 }
 
-class _CameraScreenState extends State<CameraScreen> {
+class _CameraScreenState extends State<CameraScreen>
+    with WidgetsBindingObserver {
   CameraController? _controller;
-  final AiDetectionService _aiService = AiDetectionService();
-  bool _isProcessing = false;
-  String? _statusMessage;
-  String? _qualityWarning;
+  final LocalDetectionService _detector = LocalDetectionService();
+
   bool _isInitialized = false;
+  bool _isStreaming = false;
+  bool _isProcessing = false;
   bool _flashOn = false;
 
-  bool _isLiveDetecting = false;
-  Timer? _detectionTimer;
+  String? _statusMessage;
+  String? _qualityWarning;
   List<DartThrow> _detectedDarts = [];
-  int _analysisCount = 0;
-  int _zeroDetectionStreak = 0;
+  int _zeroStreakCount = 0;
 
-  Uint8List? _baselineImageBytes;
-  bool _baselineReady = false;
-  Uint8List? _cachedCalibrationBytes;
-
-  // Verbesserung 3: Nächster-Spieler-Banner
   bool _showNextPlayerBanner = false;
-  String _nextPlayerName = '';
+  bool _baselineCaptured = false;
 
   static const int _maxDarts = 3;
-  static const int _maxZeroStreakBeforeFallback = 4;
-  static const Duration _detectionInterval = Duration(seconds: 4);
+  static const int _maxZeroStreak = 20; // ~10 Sekunden bei 500ms Intervall
+  static const Duration _analysisInterval = Duration(milliseconds: 500);
+  Timer? _analysisTimer;
+
+  // Letzter Frame aus dem Stream
+  Uint8List? _latestFrameBytes;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _loadCalibration();
     _initCamera();
-    final apiKey = context.read<SettingsProvider>().apiKey;
-    _aiService.configure(apiKey);
-    _loadCalibrationImage();
   }
 
-  Future<void> _loadCalibrationImage() async {
+  Future<void> _loadCalibration() async {
     final settings = context.read<SettingsProvider>();
-    if (settings.hasCalibrationImage) {
-      _cachedCalibrationBytes = await settings.getCalibrationImageBytes();
+    final cal = settings.boardCalibration;
+    if (cal != null) {
+      _detector.setCalibration(cal);
     }
   }
 
@@ -70,7 +68,7 @@ class _CameraScreenState extends State<CameraScreen> {
     try {
       final cameras = await availableCameras();
       if (cameras.isEmpty) {
-        setState(() => _statusMessage = 'Keine Kamera gefunden');
+        if (mounted) setState(() => _statusMessage = 'Keine Kamera gefunden');
         return;
       }
       _controller = CameraController(
@@ -83,203 +81,188 @@ class _CameraScreenState extends State<CameraScreen> {
       if (mounted) {
         setState(() {
           _isInitialized = true;
-          _statusMessage = null;
+          _statusMessage = 'Kamera bereit – Kalibrierung starten';
         });
-        _startLiveDetection();
+        _startStream();
       }
     } catch (e) {
-      setState(() => _statusMessage = 'Kamera-Fehler: $e');
+      if (mounted) setState(() => _statusMessage = 'Kamera-Fehler: $e');
     }
   }
 
-  void _startLiveDetection() {
+  // ─────────────────────────────────────────────────────────
+  //  KONTINUIERLICHER STREAM (kein Freeze!)
+  // ─────────────────────────────────────────────────────────
+
+  void _startStream() {
     if (!_isInitialized || _controller == null) return;
+    if (_isStreaming) return;
+
+    _controller!.startImageStream((CameraImage frame) {
+      if (!_isStreaming) return;
+      // Frame zu JPEG konvertieren (nur wenn nicht gerade verarbeitet)
+      if (!_isProcessing) {
+        _latestFrameBytes = _cameraImageToJpeg(frame);
+      }
+    });
+
     setState(() {
-      _isLiveDetecting = true;
-      _detectedDarts = [];
-      _analysisCount = 0;
-      _zeroDetectionStreak = 0;
-      _baselineReady = false;
-      _baselineImageBytes = null;
-      _qualityWarning = null;
-      _showNextPlayerBanner = false;
-      _statusMessage = 'Warte auf Pfeile...';
+      _isStreaming = true;
+      _statusMessage = 'Stream aktiv – Referenzframe aufnehmen';
     });
 
-    Future.delayed(const Duration(seconds: 1), () {
-      if (mounted && _isLiveDetecting && !_isProcessing) {
-        _captureBaseline();
-      }
-    });
-
-    _detectionTimer = Timer.periodic(_detectionInterval, (_) {
-      if (mounted && _isLiveDetecting && !_isProcessing) {
-        _captureAndAnalyze();
-      }
-    });
+    // Timer für periodische Analyse
+    _analysisTimer = Timer.periodic(_analysisInterval, (_) => _analyze());
   }
 
-  void _stopLiveDetection() {
-    _detectionTimer?.cancel();
-    _detectionTimer = null;
-    if (mounted) setState(() => _isLiveDetecting = false);
+  void _stopStream() {
+    _analysisTimer?.cancel();
+    _analysisTimer = null;
+    if (_controller != null && _isStreaming) {
+      try {
+        _controller!.stopImageStream();
+      } catch (_) {}
+    }
+    if (mounted) setState(() => _isStreaming = false);
   }
 
-  Future<void> _captureBaseline() async {
-    if (_controller == null || !_controller!.value.isInitialized) return;
+  /// Konvertiert CameraImage (YUV/BGRA) zu JPEG-Bytes.
+  /// Nutzt die platform-komprimierte JPEG-Version wenn verfügbar.
+  Uint8List? _cameraImageToJpeg(CameraImage frame) {
     try {
-      final file = await _controller!.takePicture();
-      final bytes = await File(file.path).readAsBytes();
-      await File(file.path).delete().catchError((_) => File(file.path));
+      // Auf Android: planes[0] ist oft direkt ein JPEG
+      if (frame.format.group == ImageFormatGroup.jpeg) {
+        return frame.planes[0].bytes;
+      }
+      // Für YUV420: nur Y-Plane nehmen (Graustufen reichen für Differenzanalyse)
+      if (frame.planes.isNotEmpty) {
+        return frame.planes[0].bytes;
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────
+  //  ANALYSE-LOOP
+  // ─────────────────────────────────────────────────────────
+
+  Future<void> _analyze() async {
+    if (!mounted || _isProcessing || _latestFrameBytes == null) return;
+
+    final bytes = _latestFrameBytes!;
+
+    // Phase 1: Referenzframe aufnehmen
+    if (!_baselineCaptured) {
+      _detector.setReferenceFrame(bytes);
       if (mounted) {
         setState(() {
-          _baselineImageBytes = bytes;
-          _baselineReady = true;
-          _statusMessage = 'Bereit – Pfeile werfen...';
+          _baselineCaptured = true;
+          _statusMessage = 'Bereit – Pfeil werfen!';
         });
       }
-    } catch (_) {}
-  }
+      return;
+    }
 
-  Future<void> _captureAndAnalyze() async {
-    if (_controller == null ||
-        !_controller!.value.isInitialized ||
-        _isProcessing) return;
-
+    // Phase 2: Bewegungserkennung
+    _isProcessing = true;
     try {
-      final file = await _controller!.takePicture();
-      final bytes = await File(file.path).readAsBytes();
-      await File(file.path).delete().catchError((_) => File(file.path));
+      final hasMotion = await _detector.hasMotion(bytes);
 
-      // Qualitätsprüfung
-      final quality = await _aiService.analyzeQuality(bytes);
-      if (mounted) setState(() => _qualityWarning = quality.warning);
-      if (quality.isDark || quality.isBlurry) return;
-
-      // Verbesserung 1: Bildvergleich — API nur bei Veränderung aufrufen
-      if (_baselineReady && _baselineImageBytes != null) {
-        final changed =
-            await _aiService.hasImageChanged(bytes, _baselineImageBytes!);
-        if (!changed) {
+      if (!hasMotion) {
+        _zeroStreakCount++;
+        if (_zeroStreakCount > _maxZeroStreak && _detectedDarts.isEmpty) {
           if (mounted) {
-            setState(() => _statusMessage = _detectedDarts.isEmpty
-                ? 'Bereit – Pfeile werfen...'
-                : '${_detectedDarts.length} Pfeil(e) – weiteren werfen...');
+            setState(() => _statusMessage = 'Warte auf Pfeil...');
           }
-          return; // Kein API-Aufruf — Kontingent gespart
         }
-      }
-
-      setState(() => _isProcessing = true);
-
-      final result = await _aiService.detectDarts(
-        bytes,
-        referenceImageBytes: _cachedCalibrationBytes,
-      );
-
-      if (!mounted) return;
-
-      if (result.quality?.warning != null) {
-        setState(() => _qualityWarning = result.quality!.warning);
-      }
-
-      if (result.hasError) {
-        setState(() {
-          _statusMessage = result.error;
-          _isProcessing = false;
-        });
         return;
       }
 
-      final newCount = result.darts.length;
-      _analysisCount++;
+      // Bewegung erkannt – vollständige Analyse
+      _zeroStreakCount = 0;
+      if (mounted) setState(() => _statusMessage = 'Pfeil erkannt – analysiere...');
 
-      if (newCount > 0) {
-        final isNew = newCount > _detectedDarts.length;
-        _zeroDetectionStreak = 0;
+      final result = await _detector.detectDarts(bytes);
+
+      if (!mounted) return;
+
+      if (result.hasError) {
+        setState(() => _statusMessage = result.error);
+        return;
+      }
+
+      if (result.darts.isEmpty) return;
+
+      // Neue Pfeile verarbeiten
+      final newCount = result.darts.length;
+      if (newCount > _detectedDarts.length) {
+        final settings = context.read<SettingsProvider>();
+
+        if (settings.vibrationEnabled) {
+          final hasVib = await Vibration.hasVibrator();
+          if (hasVib == true) Vibration.vibrate(duration: 80);
+        }
 
         setState(() {
           _detectedDarts = result.darts;
-          if (newCount == 1) {
-            _statusMessage = '1 Pfeil erkannt – weiter werfen...';
-          } else if (newCount < _maxDarts) {
-            _statusMessage = '$newCount Pfeile erkannt – weiter werfen...';
+          if (newCount < _maxDarts) {
+            _statusMessage = '$newCount Pfeil erkannt – weiteren werfen...';
           } else {
-            _statusMessage = '$newCount Pfeile erkannt!';
+            _statusMessage = '$newCount Pfeile – fertig!';
           }
         });
 
-        // Verbesserung 5: Vibration bei neu erkanntem Pfeil
-        if (isNew) {
-          final settings = context.read<SettingsProvider>();
-          if (settings.vibrationEnabled) {
-            final hasVib = await Vibration.hasVibrator();
-            if (hasVib) Vibration.vibrate(duration: 80);
-          }
-        }
+        // Referenz aktualisieren (Baseline mit neuem Pfeil)
+        _detector.setReferenceFrame(bytes);
 
-        _baselineImageBytes = bytes;
-
-        if (newCount >= _maxDarts && _isLiveDetecting) {
-          _stopLiveDetection();
-          await Future.delayed(const Duration(milliseconds: 500));
+        if (newCount >= _maxDarts) {
+          _stopStream();
+          await Future.delayed(const Duration(milliseconds: 400));
           if (mounted) await _showEditSheet(_detectedDarts);
-        }
-      } else {
-        _zeroDetectionStreak++;
-        setState(() => _statusMessage = 'Kein Pfeil erkannt – Pfeil werfen...');
-
-        // Verbesserung 4: Fallback nach mehrfach nichts erkannt
-        if (_zeroDetectionStreak >= _maxZeroStreakBeforeFallback &&
-            _analysisCount >= _maxZeroStreakBeforeFallback) {
-          _stopLiveDetection();
-          if (mounted) _showManualFallbackDialog();
         }
       }
     } catch (e) {
       if (mounted) {
-        setState(() => _statusMessage =
-            'Fehler: ${e.toString().substring(0, e.toString().length.clamp(0, 80))}');
+        setState(() => _statusMessage = 'Fehler: ${e.toString().substring(0, e.toString().length.clamp(0, 80))}');
       }
     } finally {
-      if (mounted) setState(() => _isProcessing = false);
+      _isProcessing = false;
     }
   }
 
-  void _showManualFallbackDialog() {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        title: const Text('Pfeile nicht erkannt',
-            style: TextStyle(color: AppColors.textPrimary)),
-        content: const Text(
-          'Die KI konnte nach mehreren Versuchen keine Pfeile erkennen.\n\n'
-          'Mögliche Ursachen:\n'
-          '• Zu wenig Kontrast / Beleuchtung\n'
-          '• Kamera zu weit entfernt\n'
-          '• Tageslimit erreicht\n\n'
-          'Möchtest du die Würfe manuell eingeben?',
-          style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              _startLiveDetection();
-            },
-            child: const Text('Nochmal'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              _showEditSheet([]);
-            },
-            child: const Text('Manuell eingeben'),
-          ),
-        ],
-      ),
-    );
+  // ─────────────────────────────────────────────────────────
+  //  AKTIONEN
+  // ─────────────────────────────────────────────────────────
+
+  void _captureReference() {
+    if (_latestFrameBytes == null) return;
+    _detector.setReferenceFrame(_latestFrameBytes!);
+    setState(() {
+      _baselineCaptured = true;
+      _detectedDarts = [];
+      _zeroStreakCount = 0;
+      _statusMessage = 'Referenz aufgenommen – Pfeil werfen!';
+    });
+  }
+
+  void _resetDetection() {
+    setState(() {
+      _detectedDarts = [];
+      _zeroStreakCount = 0;
+      _baselineCaptured = false;
+      _showNextPlayerBanner = false;
+      _qualityWarning = null;
+      _statusMessage = 'Referenzframe aufnehmen...';
+    });
+    if (!_isStreaming) _startStream();
+    // Neue Baseline in 500ms aufnehmen
+    Future.delayed(const Duration(milliseconds: 500), () {
+      if (mounted && _latestFrameBytes != null) {
+        _captureReference();
+      }
+    });
   }
 
   Future<void> _toggleFlash() async {
@@ -292,36 +275,59 @@ class _CameraScreenState extends State<CameraScreen> {
     } catch (_) {}
   }
 
-  void _resetDetection() {
-    _stopLiveDetection();
-    setState(() {
-      _detectedDarts = [];
-      _analysisCount = 0;
-      _zeroDetectionStreak = 0;
-      _qualityWarning = null;
-      _baselineReady = false;
-      _baselineImageBytes = null;
-      _showNextPlayerBanner = false;
-    });
-    _startLiveDetection();
-  }
-
   Future<void> _openCalibration() async {
-    _stopLiveDetection();
+    _stopStream();
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => const CalibrationScreen()),
+      MaterialPageRoute(builder: (_) => const BoardCalibrationScreen()),
     );
     if (mounted) {
-      await _loadCalibrationImage();
-      _startLiveDetection();
+      await _loadCalibration();
+      _resetDetection();
+    }
+  }
+
+  Future<void> _showEditSheet(List<DartThrow> detected) async {
+    if (!mounted) return;
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.85,
+      ),
+      builder: (_) => DartEditSheet(
+        detectedDarts: detected,
+        onConfirm: (confirmed) {
+          widget.onDartsDetected(confirmed);
+          Navigator.pop(context);
+        },
+      ),
+    );
+
+    if (mounted && _isInitialized) {
+      setState(() => _showNextPlayerBanner = true);
+      await Future.delayed(const Duration(seconds: 1));
+      if (mounted) _resetDetection();
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused) {
+      _stopStream();
+    } else if (state == AppLifecycleState.resumed && _isInitialized) {
+      _startStream();
     }
   }
 
   @override
   void dispose() {
-    _stopLiveDetection();
+    _stopStream();
     _controller?.dispose();
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
@@ -331,8 +337,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final hasCalibration =
-        context.watch<SettingsProvider>().hasCalibrationImage;
+    final hasCalibration = context.watch<SettingsProvider>().hasBoardCalibration;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -342,7 +347,7 @@ class _CameraScreenState extends State<CameraScreen> {
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_rounded),
           onPressed: () {
-            _stopLiveDetection();
+            _stopStream();
             Navigator.pop(context);
           },
         ),
@@ -373,11 +378,11 @@ class _CameraScreenState extends State<CameraScreen> {
               ],
             ),
             tooltip: hasCalibration
-                ? 'Kalibrierung neu einlesen'
-                : 'Scheibe kalibrieren (empfohlen)',
+                ? 'Kalibrierung anpassen'
+                : 'Board kalibrieren (empfohlen)',
             onPressed: _openCalibration,
           ),
-          if (_isInitialized && _controller != null)
+          if (_isInitialized)
             IconButton(
               icon: Icon(
                 _flashOn ? Icons.flash_on : Icons.flash_off,
@@ -390,17 +395,12 @@ class _CameraScreenState extends State<CameraScreen> {
       ),
       body: Column(
         children: [
-          // Verbesserung 3: Nächster-Spieler-Banner
           if (_showNextPlayerBanner) _buildNextPlayerBanner(),
-
-          // Kalibrierungs-Hinweis
           if (!hasCalibration && _isInitialized && !_showNextPlayerBanner)
             _buildCalibrationHint(),
-
-          // Qualitätswarnung
           if (_qualityWarning != null) _buildQualityWarning(_qualityWarning!),
 
-          // Kamera
+          // Kamerapreview (KEIN FREEZE — läuft kontinuierlich)
           Expanded(
             child: _isInitialized && _controller != null
                 ? Stack(
@@ -408,7 +408,13 @@ class _CameraScreenState extends State<CameraScreen> {
                     children: [
                       CameraPreview(_controller!),
                       _buildOverlay(),
-                      if (_isProcessing) _buildProcessingOverlay(),
+                      if (_isProcessing) _buildProcessingIndicator(),
+                      // Stream-Indikator
+                      Positioned(
+                        top: 12,
+                        right: 12,
+                        child: _buildStreamIndicator(),
+                      ),
                     ],
                   )
                 : Center(
@@ -417,8 +423,7 @@ class _CameraScreenState extends State<CameraScreen> {
                             padding: const EdgeInsets.all(32),
                             child: Text(_statusMessage!,
                                 textAlign: TextAlign.center,
-                                style:
-                                    const TextStyle(color: Colors.white)),
+                                style: const TextStyle(color: Colors.white)),
                           )
                         : const CircularProgressIndicator(
                             color: AppColors.primary),
@@ -431,15 +436,13 @@ class _CameraScreenState extends State<CameraScreen> {
             padding: const EdgeInsets.fromLTRB(16, 14, 16, 32),
             child: Column(
               children: [
-                // Statuszeile
                 if (_statusMessage != null)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 12),
                     child: Row(
                       children: [
                         Icon(
-                          _statusMessage!.contains('Fehler') ||
-                                  _statusMessage!.contains('KI-Fehler')
+                          _statusMessage!.contains('Fehler')
                               ? Icons.warning_amber_rounded
                               : _detectedDarts.isNotEmpty
                                   ? Icons.check_circle_rounded
@@ -463,7 +466,7 @@ class _CameraScreenState extends State<CameraScreen> {
                             ),
                           ),
                         ),
-                        if (_isLiveDetecting)
+                        if (_isStreaming && !_isProcessing)
                           const SizedBox(
                             width: 14,
                             height: 14,
@@ -476,16 +479,15 @@ class _CameraScreenState extends State<CameraScreen> {
                     ),
                   ),
 
-                // Erkannte Pfeile als Chips
-                if (_detectedDarts.isNotEmpty || _analysisCount > 0)
+                // Dart-Chips
+                if (_detectedDarts.isNotEmpty || _baselineCaptured)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 12),
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: List.generate(_maxDarts, (i) {
                         final hasThrow = i < _detectedDarts.length;
-                        final dart =
-                            hasThrow ? _detectedDarts[i] : null;
+                        final dart = hasThrow ? _detectedDarts[i] : null;
                         return Padding(
                           padding:
                               const EdgeInsets.symmetric(horizontal: 6),
@@ -495,7 +497,7 @@ class _CameraScreenState extends State<CameraScreen> {
                     ),
                   ),
 
-                // Aktions-Buttons
+                // Buttons
                 Row(
                   children: [
                     Expanded(
@@ -515,21 +517,18 @@ class _CameraScreenState extends State<CameraScreen> {
                     Expanded(
                       flex: 2,
                       child: ElevatedButton.icon(
-                        onPressed: _detectedDarts.isNotEmpty
-                            ? () {
-                                _stopLiveDetection();
-                                _showEditSheet(_detectedDarts);
-                              }
-                            : null,
+                        onPressed: () {
+                          _stopStream();
+                          _showEditSheet(_detectedDarts);
+                        },
                         icon: const Icon(Icons.check_rounded, size: 18),
                         label: Text(
                           _detectedDarts.isEmpty
-                              ? 'Pfeile prüfen'
+                              ? 'Manuell eingeben'
                               : '${_detectedDarts.length} Pfeil(e) prüfen',
                         ),
                         style: ElevatedButton.styleFrom(
-                          padding:
-                              const EdgeInsets.symmetric(vertical: 12),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
                         ),
                       ),
                     ),
@@ -547,24 +546,56 @@ class _CameraScreenState extends State<CameraScreen> {
   //  HILFS-WIDGETS
   // ─────────────────────────────────────────────────────────
 
+  Widget _buildStreamIndicator() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.6),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(
+              color: _isStreaming ? AppColors.primary : AppColors.textMuted,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 4),
+          Text(
+            _isStreaming ? 'LIVE' : 'STOP',
+            style: TextStyle(
+              color: _isStreaming ? AppColors.primary : AppColors.textMuted,
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildNextPlayerBanner() {
     return Container(
       width: double.infinity,
       color: Colors.green.withValues(alpha: 0.2),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      child: Row(
+      child: const Row(
         children: [
-          const Icon(Icons.person_rounded, color: Colors.green, size: 18),
-          const SizedBox(width: 8),
+          Icon(Icons.person_rounded, color: Colors.green, size: 18),
+          SizedBox(width: 8),
           Expanded(
             child: Text(
-              _nextPlayerName.isNotEmpty
-                  ? 'Jetzt: $_nextPlayerName – Pfeile werfen!'
-                  : 'Nächster Spieler – Pfeile werfen!',
-              style: const TextStyle(
-                  color: Colors.green,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 13),
+              'Nächster Spieler – Pfeile werfen!',
+              style: TextStyle(
+                color: Colors.green,
+                fontWeight: FontWeight.w600,
+                fontSize: 13,
+              ),
             ),
           ),
         ],
@@ -581,17 +612,15 @@ class _CameraScreenState extends State<CameraScreen> {
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         child: const Row(
           children: [
-            Icon(Icons.info_outline_rounded,
-                color: Colors.orange, size: 16),
+            Icon(Icons.info_outline_rounded, color: Colors.orange, size: 16),
             SizedBox(width: 8),
             Expanded(
               child: Text(
-                'Für bessere Erkennung: Scheibe einmalig kalibrieren',
+                'Board kalibrieren für präzise Segmenterkennung',
                 style: TextStyle(color: Colors.orange, fontSize: 12),
               ),
             ),
-            Icon(Icons.chevron_right_rounded,
-                color: Colors.orange, size: 16),
+            Icon(Icons.chevron_right_rounded, color: Colors.orange, size: 16),
           ],
         ),
       ),
@@ -599,32 +628,23 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   Widget _buildQualityWarning(String warning) {
-    final isDark = warning.contains('dunkel');
     return Container(
       width: double.infinity,
-      color: (isDark ? Colors.blue : Colors.amber)
-          .withValues(alpha: 0.15),
+      color: Colors.amber.withValues(alpha: 0.15),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Row(
         children: [
-          Icon(
-            isDark ? Icons.brightness_2_rounded : Icons.blur_on_rounded,
-            color: isDark ? Colors.lightBlueAccent : Colors.amber,
-            size: 16,
-          ),
+          const Icon(Icons.warning_amber_rounded,
+              color: Colors.amber, size: 16),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(
-              warning,
-              style: TextStyle(
-                color: isDark ? Colors.lightBlueAccent : Colors.amber,
-                fontSize: 12,
-              ),
-            ),
+            child: Text(warning,
+                style:
+                    const TextStyle(color: Colors.amber, fontSize: 12)),
           ),
         ],
       ),
-    ).animate().fadeIn(duration: const Duration(milliseconds: 300));
+    );
   }
 
   Widget _buildDartChip(int number, DartThrow? dart) {
@@ -645,13 +665,11 @@ class _CameraScreenState extends State<CameraScreen> {
       ),
       child: Column(
         children: [
-          Text(
-            'Pfeil $number',
-            style: const TextStyle(
-                fontSize: 10,
-                color: AppColors.textMuted,
-                fontWeight: FontWeight.w500),
-          ),
+          Text('Pfeil $number',
+              style: const TextStyle(
+                  fontSize: 10,
+                  color: AppColors.textMuted,
+                  fontWeight: FontWeight.w500)),
           const SizedBox(height: 4),
           Text(
             hasThrow ? _dartLabel(dart) : '–',
@@ -662,11 +680,9 @@ class _CameraScreenState extends State<CameraScreen> {
             ),
           ),
           if (hasThrow)
-            Text(
-              '${dart.score} Pkt.',
-              style: const TextStyle(
-                  fontSize: 10, color: AppColors.textSecondary),
-            ),
+            Text('${dart.score} Pkt.',
+                style: const TextStyle(
+                    fontSize: 10, color: AppColors.textSecondary)),
         ],
       ),
     ).animate(target: hasThrow ? 1 : 0).scaleXY(
@@ -688,63 +704,42 @@ class _CameraScreenState extends State<CameraScreen> {
   Widget _buildOverlay() {
     return CustomPaint(
       painter: _BoardOverlayPainter(
-        isActive: _isLiveDetecting,
+        isActive: _isStreaming,
         dartCount: _detectedDarts.length,
+        hasCalibration: _detector.hasCalibration,
+        calibration: _detector.calibration,
       ),
     );
   }
 
-  Widget _buildProcessingOverlay() {
-    return Container(
-      color: Colors.black.withValues(alpha: 0.4),
-      child: const Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            CircularProgressIndicator(color: AppColors.primary),
-            SizedBox(height: 12),
-            Text('KI analysiert...',
-                style: TextStyle(color: Colors.white, fontSize: 14)),
-          ],
+  Widget _buildProcessingIndicator() {
+    return Align(
+      alignment: Alignment.topCenter,
+      child: Padding(
+        padding: const EdgeInsets.only(top: 16),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.7),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: const Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                width: 12,
+                height: 12,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: AppColors.primary),
+              ),
+              SizedBox(width: 8),
+              Text('Analysiere...',
+                  style: TextStyle(color: Colors.white, fontSize: 12)),
+            ],
+          ),
         ),
       ),
     );
-  }
-
-  // Verbesserung 3: Kamera bleibt offen — automatisch für nächsten Spieler neu starten
-  Future<void> _showEditSheet(List<DartThrow> detected) async {
-    if (!mounted) return;
-    String? confirmedPlayerName;
-
-    await showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      constraints: BoxConstraints(
-        maxHeight: MediaQuery.of(context).size.height * 0.85,
-      ),
-      builder: (_) {
-        return DartEditSheet(
-          detectedDarts: detected,
-          onConfirm: (confirmed) {
-            widget.onDartsDetected(confirmed);
-            Navigator.pop(context);
-          },
-        );
-      },
-    );
-
-    // Sheet geschlossen (egal ob bestätigt oder abgebrochen)
-    // → Kamera bleibt offen, automatisch für nächsten Spieler neu starten
-    if (mounted && _isInitialized) {
-      setState(() {
-        _showNextPlayerBanner = true;
-        _nextPlayerName = confirmedPlayerName ?? '';
-      });
-      // Kurze Pause damit Banner sichtbar ist, dann neu starten
-      await Future.delayed(const Duration(seconds: 1));
-      if (mounted) _resetDetection();
-    }
   }
 }
 
@@ -755,38 +750,66 @@ class _CameraScreenState extends State<CameraScreen> {
 class _BoardOverlayPainter extends CustomPainter {
   final bool isActive;
   final int dartCount;
+  final bool hasCalibration;
+  final BoardCalibration? calibration;
 
   const _BoardOverlayPainter({
     this.isActive = false,
     this.dartCount = 0,
+    this.hasCalibration = false,
+    this.calibration,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height / 2);
-    final radius = size.width * 0.35;
-
     final color = dartCount >= 3 ? Colors.greenAccent : AppColors.primary;
 
-    final paint = Paint()
-      ..color = color.withValues(alpha: 0.4)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2;
+    if (hasCalibration && calibration != null) {
+      // Board-Mittelpunkt und Radius aus Kalibrierung
+      final cal = calibration!;
+      final scaleX = size.width / cal.imageWidth;
+      final scaleY = size.height / cal.imageHeight;
+      final cx = cal.centerX * scaleX;
+      final cy = cal.centerY * scaleY;
+      final r = cal.radius * ((scaleX + scaleY) / 2);
 
-    canvas.drawCircle(center, radius, paint);
-    canvas.drawCircle(center, radius * 0.6, paint..strokeWidth = 1);
+      final paint = Paint()
+        ..color = color.withValues(alpha: 0.5)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2;
 
-    final dashPaint = Paint()
-      ..color = color.withValues(alpha: 0.2)
-      ..strokeWidth = 1;
+      canvas.drawCircle(Offset(cx, cy), r, paint);
+      canvas.drawCircle(Offset(cx, cy), r * 0.65, paint..strokeWidth = 1);
+      canvas.drawCircle(Offset(cx, cy), r * 0.13, paint);
+      canvas.drawCircle(Offset(cx, cy), r * 0.05,
+          Paint()..color = color.withValues(alpha: 0.4));
+    } else {
+      // Standard-Kreis-Overlay (keine Kalibrierung)
+      final center = Offset(size.width / 2, size.height / 2);
+      final radius = size.width * 0.35;
 
-    canvas.drawLine(Offset(center.dx - radius, center.dy),
-        Offset(center.dx + radius, center.dy), dashPaint);
-    canvas.drawLine(Offset(center.dx, center.dy - radius),
-        Offset(center.dx, center.dy + radius), dashPaint);
+      final paint = Paint()
+        ..color = color.withValues(alpha: 0.4)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2;
+
+      canvas.drawCircle(center, radius, paint);
+      canvas.drawCircle(center, radius * 0.6, paint..strokeWidth = 1);
+
+      final dashPaint = Paint()
+        ..color = color.withValues(alpha: 0.2)
+        ..strokeWidth = 1;
+
+      canvas.drawLine(Offset(center.dx - radius, center.dy),
+          Offset(center.dx + radius, center.dy), dashPaint);
+      canvas.drawLine(Offset(center.dx, center.dy - radius),
+          Offset(center.dx, center.dy + radius), dashPaint);
+    }
   }
 
   @override
   bool shouldRepaint(_BoardOverlayPainter old) =>
-      old.isActive != isActive || old.dartCount != dartCount;
+      old.isActive != isActive ||
+      old.dartCount != dartCount ||
+      old.hasCalibration != hasCalibration;
 }
