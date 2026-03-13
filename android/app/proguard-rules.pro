@@ -9,5 +9,10 @@
 ## Google Generative AI
 -keep class com.google.ai.** { *; }
 
+## Google Play Core (referenced by Flutter deferred components, not used in APK builds)
+-dontwarn com.google.android.play.core.splitcompat.**
+-dontwarn com.google.android.play.core.splitinstall.**
+-dontwarn com.google.android.play.core.tasks.**
+
 ## Keep annotations
 -keepattributes *Annotation*
