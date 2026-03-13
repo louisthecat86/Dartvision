@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 class GameHistoryEntry {
   final String id;
   final String gameType;

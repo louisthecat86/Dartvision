@@ -31,7 +31,7 @@ class GameProvider extends ChangeNotifier {
     int shanghaiRounds = 7,
     int highScoreRounds = 10,
   }) {
-    final uuid = const Uuid();
+    const uuid = Uuid();
 
     int startScore = 0;
     if (gameType == AppConstants.game501) startScore = 501;
@@ -652,7 +652,9 @@ class GameProvider extends ChangeNotifier {
     final gt = _game!.gameType;
     if (gt != AppConstants.game501 &&
         gt != AppConstants.game301 &&
-        gt != AppConstants.game701) return null;
+        gt != AppConstants.game701) {
+      return null;
+    }
 
     final remaining = _game!.currentPlayer.scoreRemaining;
     if (remaining > 170 || remaining < 2) return null;

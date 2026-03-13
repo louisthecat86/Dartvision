@@ -103,7 +103,7 @@ class _HistoryScreenState extends State<HistoryScreen>
                   'Darts geworfen', '${_stats['totalDarts']}', Icons.gps_fixed),
               _buildStatCard(
                   'Bester Schnitt',
-                  '${(_stats['bestAverage'] as double).toStringAsFixed(1)}',
+                  (_stats['bestAverage'] as double).toStringAsFixed(1),
                   Icons.trending_up),
               _buildStatCard(
                   '180er', '${_stats['most180s']}', Icons.star_rounded),
@@ -310,6 +310,7 @@ class _HistoryScreenState extends State<HistoryScreen>
           TextButton(
             onPressed: () async {
               await GameHistoryService.clearHistory();
+              if (!ctx.mounted) return;
               Navigator.pop(ctx);
               _loadData();
             },

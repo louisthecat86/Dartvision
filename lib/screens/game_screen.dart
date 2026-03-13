@@ -3,7 +3,6 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:provider/provider.dart';
 import '../config/constants.dart';
 import '../config/theme.dart';
-import '../models/dart_throw.dart';
 import '../providers/game_provider.dart';
 import '../providers/settings_provider.dart';
 import '../widgets/dartboard_input_widget.dart';

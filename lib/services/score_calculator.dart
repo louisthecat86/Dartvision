@@ -107,7 +107,6 @@ class ScoreCalculator {
 
     if (newMarks > 3 && !closedByOthers) {
       // Score points for excess marks
-      final excessMarks = newMarks - 3 - (currentMarks > 3 ? currentMarks - 3 : 0);
       final effectiveExcess = currentMarks >= 3 ? marksToAdd : newMarks - 3;
       pointsAdded = effectiveExcess * (segment == 25 ? 25 : segment);
     }

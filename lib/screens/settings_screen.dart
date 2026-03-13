@@ -75,25 +75,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
               // About
               _buildSectionHeader('Über', Icons.info_outline_rounded),
               const SizedBox(height: 12),
-              Card(
+              const Card(
                 child: Padding(
-                  padding: const EdgeInsets.all(16),
+                  padding: EdgeInsets.all(16),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
+                      Text(
                         'DartVision v1.0.0',
                         style: TextStyle(
                           fontWeight: FontWeight.w700,
                           color: AppColors.textPrimary,
                         ),
                       ),
-                      const SizedBox(height: 4),
+                      SizedBox(height: 4),
                       Text(
                         'KI-gesteuerter Dart Tracker.\n'
                         'Nutzt Google Gemini für die Darterkennung.\n\n'
-                        'Spielmodi: 501, 301, Cricket, Around the Clock\n'
-                        'Manuelle & Kamera-Eingabe',
+                        'Spielmodi: 501, 301, 701, Cricket, Cut Throat,\n'
+                        'Around the Clock, Shanghai, Killer, Bob\'s 27,\n'
+                        'High Score, Double Training\n'
+                        'Manuelle & Kamera-Eingabe mit KI-Korrektur',
                         style: TextStyle(
                           color: AppColors.textSecondary,
                           fontSize: 13,

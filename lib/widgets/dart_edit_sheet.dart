@@ -131,14 +131,14 @@ class _DartEditSheetState extends State<DartEditSheet> {
   }
 
   Widget _buildEmptyState() {
-    return Padding(
-      padding: const EdgeInsets.all(32),
+    return const Padding(
+      padding: EdgeInsets.all(32),
       child: Column(
         children: [
-          const Icon(Icons.sports_rounded,
+          Icon(Icons.sports_rounded,
               size: 48, color: AppColors.textMuted),
-          const SizedBox(height: 12),
-          const Text(
+          SizedBox(height: 12),
+          Text(
             'Keine Darts erkannt.\nFüge manuell Darts hinzu oder nimm ein neues Foto.',
             textAlign: TextAlign.center,
             style: TextStyle(color: AppColors.textMuted, fontSize: 14),

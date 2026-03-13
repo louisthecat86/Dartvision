@@ -175,7 +175,7 @@ class GenericScoreboardWidget extends StatelessWidget {
         return '${player.shanghaiScore}';
       case AppConstants.gameKiller:
         if (player.killerLives <= 0) return '☠️';
-        return '${'❤️' * player.killerLives}';
+        return '❤️' * player.killerLives;
       case AppConstants.gameBobs27:
         return '${player.bobs27Score}';
       case AppConstants.gameHighScore:

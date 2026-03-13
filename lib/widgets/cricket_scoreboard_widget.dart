@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import '../config/constants.dart';
 import '../config/theme.dart';
 import '../models/game_state.dart';
-import '../models/player.dart';
 
 class CricketScoreboardWidget extends StatelessWidget {
   final GameState game;

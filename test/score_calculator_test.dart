@@ -62,7 +62,7 @@ void main() {
   });
 
   group('ScoreCalculator - X01', () {
-    GameState _makeGame({
+    GameState makeGame({
       int startScore = 501,
       bool doubleOut = true,
       bool doubleIn = false,
@@ -80,7 +80,7 @@ void main() {
     }
 
     test('normal throw reduces score', () {
-      final game = _makeGame();
+      final game = makeGame();
       final player = game.players.first;
       final dart = DartThrow.manual(20, RingType.triple);
       final result = ScoreCalculator.processX01Throw(player, dart, game);
@@ -90,7 +90,7 @@ void main() {
     });
 
     test('bust when score goes below 0', () {
-      final game = _makeGame(startScore: 10);
+      final game = makeGame(startScore: 10);
       final player = game.players.first;
       player.scoreRemaining = 10;
       final dart = DartThrow.manual(20, RingType.singleOuter);
@@ -100,7 +100,7 @@ void main() {
     });
 
     test('bust when finishing without double (double out)', () {
-      final game = _makeGame();
+      final game = makeGame();
       final player = game.players.first;
       player.scoreRemaining = 20;
       final dart = DartThrow.manual(20, RingType.singleOuter);
@@ -110,7 +110,7 @@ void main() {
     });
 
     test('win with double out', () {
-      final game = _makeGame();
+      final game = makeGame();
       final player = game.players.first;
       player.scoreRemaining = 40;
       final dart = DartThrow.manual(20, RingType.double_);
@@ -121,7 +121,7 @@ void main() {
     });
 
     test('win with bullseye (double out)', () {
-      final game = _makeGame();
+      final game = makeGame();
       final player = game.players.first;
       player.scoreRemaining = 50;
       final dart = DartThrow.manual(25, RingType.innerBull);
@@ -132,7 +132,7 @@ void main() {
     });
 
     test('bust on score remaining 1 with double out', () {
-      final game = _makeGame();
+      final game = makeGame();
       final player = game.players.first;
       player.scoreRemaining = 2;
       final dart = DartThrow.manual(1, RingType.singleOuter);
@@ -142,7 +142,7 @@ void main() {
     });
 
     test('no double out allows single finish', () {
-      final game = _makeGame(doubleOut: false);
+      final game = makeGame(doubleOut: false);
       final player = game.players.first;
       player.scoreRemaining = 20;
       final dart = DartThrow.manual(20, RingType.singleOuter);
@@ -153,7 +153,7 @@ void main() {
     });
 
     test('double in blocks first non-double throw', () {
-      final game = _makeGame(doubleIn: true);
+      final game = makeGame(doubleIn: true);
       final player = game.players.first;
       // Player has no score yet (totalScore == 0 based on allThrows)
       final dart = DartThrow.manual(20, RingType.singleOuter);
