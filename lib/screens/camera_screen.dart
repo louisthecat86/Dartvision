@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
+import '../config/constants.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -128,7 +130,7 @@ class _CameraScreenState extends State<CameraScreen> {
     try {
       final file = await _controller!.takePicture();
       final bytes = await File(file.path).readAsBytes();
-      await File(file.path).delete().catchError((_) {});
+      await File(file.path).delete().catchError((_) => File(file.path));
       if (mounted) {
         setState(() {
           _baselineImageBytes = bytes;
@@ -147,7 +149,7 @@ class _CameraScreenState extends State<CameraScreen> {
     try {
       final file = await _controller!.takePicture();
       final bytes = await File(file.path).readAsBytes();
-      await File(file.path).delete().catchError((_) {});
+      await File(file.path).delete().catchError((_) => File(file.path));
 
       // Qualitätsprüfung
       final quality = await _aiService.analyzeQuality(bytes);
@@ -444,7 +446,7 @@ class _CameraScreenState extends State<CameraScreen> {
                                   : Icons.radar_rounded,
                           size: 16,
                           color: _statusMessage!.contains('Fehler')
-                              ? AppColors.error
+                              ? AppColors.accent
                               : _detectedDarts.isNotEmpty
                                   ? AppColors.primary
                                   : AppColors.textSecondary,
@@ -455,7 +457,7 @@ class _CameraScreenState extends State<CameraScreen> {
                             _statusMessage!,
                             style: TextStyle(
                               color: _statusMessage!.contains('Fehler')
-                                  ? AppColors.error
+                                  ? AppColors.accent
                                   : AppColors.textSecondary,
                               fontSize: 13,
                             ),
@@ -634,7 +636,7 @@ class _CameraScreenState extends State<CameraScreen> {
       decoration: BoxDecoration(
         color: hasThrow
             ? AppColors.primary.withValues(alpha: 0.15)
-            : AppColors.cardBackground,
+            : AppColors.surfaceLight,
         borderRadius: BorderRadius.circular(10),
         border: Border.all(
           color: hasThrow ? AppColors.primary : AppColors.border,

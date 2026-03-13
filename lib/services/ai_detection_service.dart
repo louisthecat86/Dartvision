@@ -166,7 +166,7 @@ class AiDetectionService {
         isBright: isBright,
         isBlurry: isBlurry,
         warning: warning,
-        luminance: avgLum,
+        luminance: avgLum.toDouble(),
       );
     } catch (_) {
       return const ImageQuality();

@@ -203,21 +203,21 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
                     margin: const EdgeInsets.only(bottom: 12),
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      color: AppColors.error.withValues(alpha: 0.1),
+                      color: AppColors.accent.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(10),
                       border: Border.all(
-                          color: AppColors.error.withValues(alpha: 0.4)),
+                          color: AppColors.accent.withValues(alpha: 0.4)),
                     ),
                     child: Row(
                       children: [
                         const Icon(Icons.warning_amber_rounded,
-                            color: AppColors.error, size: 18),
+                            color: AppColors.accent, size: 18),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
                             _errorMessage!,
                             style: const TextStyle(
-                                color: AppColors.error, fontSize: 13),
+                                color: AppColors.accent, fontSize: 13),
                           ),
                         ),
                       ],
