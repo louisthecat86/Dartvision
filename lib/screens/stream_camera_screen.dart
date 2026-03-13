@@ -6,7 +6,6 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:provider/provider.dart';
 import 'package:vibration/vibration.dart';
 import '../config/theme.dart';
-import '../config/constants.dart';
 import '../models/dart_throw.dart';
 import '../providers/settings_provider.dart';
 import '../services/local_detection_service.dart';
@@ -31,22 +30,22 @@ class _CameraScreenState extends State<CameraScreen>
   bool _isStreaming = false;
   bool _isProcessing = false;
   bool _flashOn = false;
+  bool _baselineCaptured = false;
+  bool _showNextPlayerBanner = false;
 
   String? _statusMessage;
-  String? _qualityWarning;
   List<DartThrow> _detectedDarts = [];
-  int _zeroStreakCount = 0;
-
-  bool _showNextPlayerBanner = false;
-  bool _baselineCaptured = false;
+  int _zeroStreak = 0;
+  int _frameCount = 0;
 
   static const int _maxDarts = 3;
-  static const int _maxZeroStreak = 20; // ~10 Sekunden bei 500ms Intervall
-  static const Duration _analysisInterval = Duration(milliseconds: 500);
-  Timer? _analysisTimer;
+  static const int _analyzeEveryNFrames = 15; // ~500ms bei 30fps
+  static const int _maxZeroStreak = 40;
 
-  // Letzter Frame aus dem Stream
-  Uint8List? _latestFrameBytes;
+  // Letzter Y-Plane-Frame (direkt aus Stream, kein JPEG-Decode)
+  Uint8List? _latestY;
+  int _latestWidth = 0;
+  int _latestHeight = 0;
 
   @override
   void initState() {
@@ -57,11 +56,8 @@ class _CameraScreenState extends State<CameraScreen>
   }
 
   Future<void> _loadCalibration() async {
-    final settings = context.read<SettingsProvider>();
-    final cal = settings.boardCalibration;
-    if (cal != null) {
-      _detector.setCalibration(cal);
-    }
+    final cal = context.read<SettingsProvider>().boardCalibration;
+    if (cal != null) _detector.setCalibration(cal);
   }
 
   Future<void> _initCamera() async {
@@ -75,13 +71,13 @@ class _CameraScreenState extends State<CameraScreen>
         cameras.first,
         ResolutionPreset.medium,
         enableAudio: false,
-        imageFormatGroup: ImageFormatGroup.jpeg,
+        imageFormatGroup: ImageFormatGroup.yuv420,
       );
       await _controller!.initialize();
       if (mounted) {
         setState(() {
           _isInitialized = true;
-          _statusMessage = 'Kamera bereit – Kalibrierung starten';
+          _statusMessage = 'Kamera bereit';
         });
         _startStream();
       }
@@ -91,115 +87,117 @@ class _CameraScreenState extends State<CameraScreen>
   }
 
   // ─────────────────────────────────────────────────────────
-  //  KONTINUIERLICHER STREAM (kein Freeze!)
+  //  STREAM — kein JPEG, rohe Y-Plane-Bytes (kein Freeze!)
   // ─────────────────────────────────────────────────────────
 
   void _startStream() {
-    if (!_isInitialized || _controller == null) return;
-    if (_isStreaming) return;
+    if (!_isInitialized || _controller == null || _isStreaming) return;
+    _frameCount = 0;
 
     _controller!.startImageStream((CameraImage frame) {
       if (!_isStreaming) return;
-      // Frame zu JPEG konvertieren (nur wenn nicht gerade verarbeitet)
-      if (!_isProcessing) {
-        _latestFrameBytes = _cameraImageToJpeg(frame);
+      // Y-Plane extrahieren (Grauwerte, immer planes[0] bei YUV420 + NV21)
+      final yPlane = frame.planes[0];
+      final w = frame.width;
+      final h = frame.height;
+      final stride = yPlane.bytesPerRow;
+
+      // Padding entfernen falls stride != width
+      if (stride == w) {
+        _latestY = yPlane.bytes;
+      } else {
+        final clean = Uint8List(w * h);
+        for (int row = 0; row < h; row++) {
+          final src = row * stride;
+          final dst = row * w;
+          final end = dst + w;
+          if (src + w <= yPlane.bytes.length) {
+            clean.setRange(dst, end, yPlane.bytes, src);
+          }
+        }
+        _latestY = clean;
+      }
+      _latestWidth = w;
+      _latestHeight = h;
+
+      _frameCount++;
+      if (_frameCount % _analyzeEveryNFrames == 0 && !_isProcessing) {
+        _analyze();
       }
     });
 
     setState(() {
       _isStreaming = true;
-      _statusMessage = 'Stream aktiv – Referenzframe aufnehmen';
+      _statusMessage = 'Referenzframe aufnehmen...';
     });
 
-    // Timer für periodische Analyse
-    _analysisTimer = Timer.periodic(_analysisInterval, (_) => _analyze());
+    // Referenz nach 1 Sekunde aufnehmen (Board leer, keine Pfeile)
+    Future.delayed(const Duration(milliseconds: 1200), () {
+      if (mounted && _isStreaming) _captureReference();
+    });
   }
 
   void _stopStream() {
-    _analysisTimer?.cancel();
-    _analysisTimer = null;
     if (_controller != null && _isStreaming) {
-      try {
-        _controller!.stopImageStream();
-      } catch (_) {}
+      try { _controller!.stopImageStream(); } catch (_) {}
     }
     if (mounted) setState(() => _isStreaming = false);
   }
 
-  /// Konvertiert CameraImage (YUV/BGRA) zu JPEG-Bytes.
-  /// Nutzt die platform-komprimierte JPEG-Version wenn verfügbar.
-  Uint8List? _cameraImageToJpeg(CameraImage frame) {
-    try {
-      // Auf Android: planes[0] ist oft direkt ein JPEG
-      if (frame.format.group == ImageFormatGroup.jpeg) {
-        return frame.planes[0].bytes;
-      }
-      // Für YUV420: nur Y-Plane nehmen (Graustufen reichen für Differenzanalyse)
-      if (frame.planes.isNotEmpty) {
-        return frame.planes[0].bytes;
-      }
-      return null;
-    } catch (_) {
-      return null;
+  // ─────────────────────────────────────────────────────────
+  //  REFERENZ + ANALYSE
+  // ─────────────────────────────────────────────────────────
+
+  void _captureReference() {
+    if (_latestY == null) return;
+    _detector.setReferenceFromYPlane(_latestY!, _latestWidth, _latestHeight);
+    if (mounted) {
+      setState(() {
+        _baselineCaptured = true;
+        _zeroStreak = 0;
+        _detectedDarts = [];
+        _statusMessage = 'Bereit – Pfeil werfen!';
+      });
     }
   }
 
-  // ─────────────────────────────────────────────────────────
-  //  ANALYSE-LOOP
-  // ─────────────────────────────────────────────────────────
-
   Future<void> _analyze() async {
-    if (!mounted || _isProcessing || _latestFrameBytes == null) return;
+    if (!_baselineCaptured || _latestY == null || _isProcessing) return;
 
-    final bytes = _latestFrameBytes!;
-
-    // Phase 1: Referenzframe aufnehmen
-    if (!_baselineCaptured) {
-      _detector.setReferenceFrame(bytes);
-      if (mounted) {
-        setState(() {
-          _baselineCaptured = true;
-          _statusMessage = 'Bereit – Pfeil werfen!';
-        });
-      }
-      return;
-    }
-
-    // Phase 2: Bewegungserkennung
     _isProcessing = true;
     try {
-      final hasMotion = await _detector.hasMotion(bytes);
+      final y = _latestY!;
+      final w = _latestWidth;
+      final h = _latestHeight;
 
-      if (!hasMotion) {
-        _zeroStreakCount++;
-        if (_zeroStreakCount > _maxZeroStreak && _detectedDarts.isEmpty) {
-          if (mounted) {
-            setState(() => _statusMessage = 'Warte auf Pfeil...');
-          }
+      // Schritt 1: Schneller Bewegungscheck (direkter Byte-Vergleich)
+      final motion = _detector.hasMotionInYPlane(y, w, h);
+
+      if (!motion) {
+        _zeroStreak++;
+        if (_zeroStreak > _maxZeroStreak && _detectedDarts.isEmpty && mounted) {
+          setState(() => _statusMessage = 'Warte auf Pfeil...');
+          _zeroStreak = 0;
         }
         return;
       }
 
-      // Bewegung erkannt – vollständige Analyse
-      _zeroStreakCount = 0;
-      if (mounted) setState(() => _statusMessage = 'Pfeil erkannt – analysiere...');
+      // Schritt 2: Bewegung erkannt → Position analysieren
+      _zeroStreak = 0;
+      if (mounted) setState(() => _statusMessage = 'Pfeil erkannt...');
 
-      final result = await _detector.detectDarts(bytes);
+      final result = _detector.detectFromYPlane(y, w, h);
 
       if (!mounted) return;
-
       if (result.hasError) {
         setState(() => _statusMessage = result.error);
         return;
       }
-
       if (result.darts.isEmpty) return;
 
-      // Neue Pfeile verarbeiten
       final newCount = result.darts.length;
       if (newCount > _detectedDarts.length) {
         final settings = context.read<SettingsProvider>();
-
         if (settings.vibrationEnabled) {
           final hasVib = await Vibration.hasVibrator();
           if (hasVib == true) Vibration.vibrate(duration: 80);
@@ -207,25 +205,19 @@ class _CameraScreenState extends State<CameraScreen>
 
         setState(() {
           _detectedDarts = result.darts;
-          if (newCount < _maxDarts) {
-            _statusMessage = '$newCount Pfeil erkannt – weiteren werfen...';
-          } else {
-            _statusMessage = '$newCount Pfeile – fertig!';
-          }
+          _statusMessage = newCount < _maxDarts
+              ? '$newCount Pfeil erkannt – weiteren werfen...'
+              : '$newCount Pfeile erkannt!';
         });
 
-        // Referenz aktualisieren (Baseline mit neuem Pfeil)
-        _detector.setReferenceFrame(bytes);
+        // Referenz mit neuem Pfeil aktualisieren
+        _detector.setReferenceFromYPlane(y, w, h);
 
         if (newCount >= _maxDarts) {
           _stopStream();
           await Future.delayed(const Duration(milliseconds: 400));
           if (mounted) await _showEditSheet(_detectedDarts);
         }
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _statusMessage = 'Fehler: ${e.toString().substring(0, e.toString().length.clamp(0, 80))}');
       }
     } finally {
       _isProcessing = false;
@@ -236,32 +228,18 @@ class _CameraScreenState extends State<CameraScreen>
   //  AKTIONEN
   // ─────────────────────────────────────────────────────────
 
-  void _captureReference() {
-    if (_latestFrameBytes == null) return;
-    _detector.setReferenceFrame(_latestFrameBytes!);
-    setState(() {
-      _baselineCaptured = true;
-      _detectedDarts = [];
-      _zeroStreakCount = 0;
-      _statusMessage = 'Referenz aufgenommen – Pfeil werfen!';
-    });
-  }
-
   void _resetDetection() {
     setState(() {
       _detectedDarts = [];
-      _zeroStreakCount = 0;
+      _zeroStreak = 0;
       _baselineCaptured = false;
       _showNextPlayerBanner = false;
-      _qualityWarning = null;
       _statusMessage = 'Referenzframe aufnehmen...';
     });
+    _detector.clearReference();
     if (!_isStreaming) _startStream();
-    // Neue Baseline in 500ms aufnehmen
-    Future.delayed(const Duration(milliseconds: 500), () {
-      if (mounted && _latestFrameBytes != null) {
-        _captureReference();
-      }
+    Future.delayed(const Duration(milliseconds: 1200), () {
+      if (mounted && _isStreaming) _captureReference();
     });
   }
 
@@ -269,8 +247,7 @@ class _CameraScreenState extends State<CameraScreen>
     if (_controller == null) return;
     try {
       _flashOn = !_flashOn;
-      await _controller!
-          .setFlashMode(_flashOn ? FlashMode.torch : FlashMode.off);
+      await _controller!.setFlashMode(_flashOn ? FlashMode.torch : FlashMode.off);
       setState(() {});
     } catch (_) {}
   }
@@ -289,14 +266,12 @@ class _CameraScreenState extends State<CameraScreen>
 
   Future<void> _showEditSheet(List<DartThrow> detected) async {
     if (!mounted) return;
-
     await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       constraints: BoxConstraints(
-        maxHeight: MediaQuery.of(context).size.height * 0.85,
-      ),
+          maxHeight: MediaQuery.of(context).size.height * 0.85),
       builder: (_) => DartEditSheet(
         detectedDarts: detected,
         onConfirm: (confirmed) {
@@ -315,11 +290,11 @@ class _CameraScreenState extends State<CameraScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.inactive ||
-        state == AppLifecycleState.paused) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
       _stopStream();
     } else if (state == AppLifecycleState.resumed && _isInitialized) {
-      _startStream();
+      _resetDetection();
     }
   }
 
@@ -337,7 +312,8 @@ class _CameraScreenState extends State<CameraScreen>
 
   @override
   Widget build(BuildContext context) {
-    final hasCalibration = context.watch<SettingsProvider>().hasBoardCalibration;
+    final hasCalibration =
+        context.watch<SettingsProvider>().hasBoardCalibration;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -356,12 +332,10 @@ class _CameraScreenState extends State<CameraScreen>
             icon: Stack(
               clipBehavior: Clip.none,
               children: [
-                Icon(
-                  Icons.tune_rounded,
-                  color: hasCalibration
-                      ? AppColors.primary
-                      : AppColors.textSecondary,
-                ),
+                Icon(Icons.tune_rounded,
+                    color: hasCalibration
+                        ? AppColors.primary
+                        : AppColors.textSecondary),
                 if (!hasCalibration)
                   Positioned(
                     right: -2,
@@ -370,26 +344,20 @@ class _CameraScreenState extends State<CameraScreen>
                       width: 8,
                       height: 8,
                       decoration: const BoxDecoration(
-                        color: Colors.orange,
-                        shape: BoxShape.circle,
-                      ),
+                          color: Colors.orange, shape: BoxShape.circle),
                     ),
                   ),
               ],
             ),
-            tooltip: hasCalibration
-                ? 'Kalibrierung anpassen'
-                : 'Board kalibrieren (empfohlen)',
+            tooltip: 'Board kalibrieren',
             onPressed: _openCalibration,
           ),
           if (_isInitialized)
             IconButton(
-              icon: Icon(
-                _flashOn ? Icons.flash_on : Icons.flash_off,
-                color: _flashOn ? AppColors.gold : AppColors.textSecondary,
-              ),
+              icon: Icon(_flashOn ? Icons.flash_on : Icons.flash_off,
+                  color:
+                      _flashOn ? AppColors.gold : AppColors.textSecondary),
               onPressed: _toggleFlash,
-              tooltip: 'Blitz',
             ),
         ],
       ),
@@ -398,22 +366,25 @@ class _CameraScreenState extends State<CameraScreen>
           if (_showNextPlayerBanner) _buildNextPlayerBanner(),
           if (!hasCalibration && _isInitialized && !_showNextPlayerBanner)
             _buildCalibrationHint(),
-          if (_qualityWarning != null) _buildQualityWarning(_qualityWarning!),
 
-          // Kamerapreview (KEIN FREEZE — läuft kontinuierlich)
+          // Kamera-Preview (kein Freeze — Stream läuft immer)
           Expanded(
             child: _isInitialized && _controller != null
                 ? Stack(
                     fit: StackFit.expand,
                     children: [
                       CameraPreview(_controller!),
-                      _buildOverlay(),
-                      if (_isProcessing) _buildProcessingIndicator(),
-                      // Stream-Indikator
+                      CustomPaint(
+                        painter: _BoardOverlayPainter(
+                          isActive: _isStreaming,
+                          dartCount: _detectedDarts.length,
+                          calibration: _detector.calibration,
+                        ),
+                      ),
                       Positioned(
                         top: 12,
                         right: 12,
-                        child: _buildStreamIndicator(),
+                        child: _buildStreamBadge(),
                       ),
                     ],
                   )
@@ -423,8 +394,8 @@ class _CameraScreenState extends State<CameraScreen>
                             padding: const EdgeInsets.all(32),
                             child: Text(_statusMessage!,
                                 textAlign: TextAlign.center,
-                                style: const TextStyle(color: Colors.white)),
-                          )
+                                style:
+                                    const TextStyle(color: Colors.white)))
                         : const CircularProgressIndicator(
                             color: AppColors.primary),
                   ),
@@ -471,23 +442,20 @@ class _CameraScreenState extends State<CameraScreen>
                             width: 14,
                             height: 14,
                             child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: AppColors.primary,
-                            ),
+                                strokeWidth: 2, color: AppColors.primary),
                           ),
                       ],
                     ),
                   ),
 
-                // Dart-Chips
                 if (_detectedDarts.isNotEmpty || _baselineCaptured)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 12),
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: List.generate(_maxDarts, (i) {
-                        final hasThrow = i < _detectedDarts.length;
-                        final dart = hasThrow ? _detectedDarts[i] : null;
+                        final dart =
+                            i < _detectedDarts.length ? _detectedDarts[i] : null;
                         return Padding(
                           padding:
                               const EdgeInsets.symmetric(horizontal: 6),
@@ -497,7 +465,6 @@ class _CameraScreenState extends State<CameraScreen>
                     ),
                   ),
 
-                // Buttons
                 Row(
                   children: [
                     Expanded(
@@ -528,7 +495,8 @@ class _CameraScreenState extends State<CameraScreen>
                               : '${_detectedDarts.length} Pfeil(e) prüfen',
                         ),
                         style: ElevatedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          padding:
+                              const EdgeInsets.symmetric(vertical: 12),
                         ),
                       ),
                     ),
@@ -546,11 +514,11 @@ class _CameraScreenState extends State<CameraScreen>
   //  HILFS-WIDGETS
   // ─────────────────────────────────────────────────────────
 
-  Widget _buildStreamIndicator() {
+  Widget _buildStreamBadge() {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.6),
+        color: Colors.black.withValues(alpha: 0.65),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Row(
@@ -589,14 +557,11 @@ class _CameraScreenState extends State<CameraScreen>
           Icon(Icons.person_rounded, color: Colors.green, size: 18),
           SizedBox(width: 8),
           Expanded(
-            child: Text(
-              'Nächster Spieler – Pfeile werfen!',
-              style: TextStyle(
-                color: Colors.green,
-                fontWeight: FontWeight.w600,
-                fontSize: 13,
-              ),
-            ),
+            child: Text('Nächster Spieler – Pfeile werfen!',
+                style: TextStyle(
+                    color: Colors.green,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13)),
           ),
         ],
       ),
@@ -616,7 +581,7 @@ class _CameraScreenState extends State<CameraScreen>
             SizedBox(width: 8),
             Expanded(
               child: Text(
-                'Board kalibrieren für präzise Segmenterkennung',
+                'Board kalibrieren für Segmenterkennung (auch bei Schrägansicht)',
                 style: TextStyle(color: Colors.orange, fontSize: 12),
               ),
             ),
@@ -627,69 +592,42 @@ class _CameraScreenState extends State<CameraScreen>
     ).animate().fadeIn(duration: const Duration(milliseconds: 400));
   }
 
-  Widget _buildQualityWarning(String warning) {
-    return Container(
-      width: double.infinity,
-      color: Colors.amber.withValues(alpha: 0.15),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: Row(
-        children: [
-          const Icon(Icons.warning_amber_rounded,
-              color: Colors.amber, size: 16),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(warning,
-                style:
-                    const TextStyle(color: Colors.amber, fontSize: 12)),
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _buildDartChip(int number, DartThrow? dart) {
-    final hasThrow = dart != null;
+    final has = dart != null;
     return AnimatedContainer(
       duration: const Duration(milliseconds: 300),
       width: 80,
       padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
       decoration: BoxDecoration(
-        color: hasThrow
+        color: has
             ? AppColors.primary.withValues(alpha: 0.15)
             : AppColors.surfaceLight,
         borderRadius: BorderRadius.circular(10),
         border: Border.all(
-          color: hasThrow ? AppColors.primary : AppColors.border,
-          width: hasThrow ? 1.5 : 1,
-        ),
+            color: has ? AppColors.primary : AppColors.border,
+            width: has ? 1.5 : 1),
       ),
-      child: Column(
-        children: [
-          Text('Pfeil $number',
-              style: const TextStyle(
-                  fontSize: 10,
-                  color: AppColors.textMuted,
-                  fontWeight: FontWeight.w500)),
-          const SizedBox(height: 4),
-          Text(
-            hasThrow ? _dartLabel(dart) : '–',
-            style: TextStyle(
+      child: Column(children: [
+        Text('Pfeil $number',
+            style: const TextStyle(
+                fontSize: 10,
+                color: AppColors.textMuted,
+                fontWeight: FontWeight.w500)),
+        const SizedBox(height: 4),
+        Text(
+          has ? _dartLabel(dart) : '–',
+          style: TextStyle(
               fontSize: 16,
-              color: hasThrow ? AppColors.primary : AppColors.textMuted,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          if (hasThrow)
-            Text('${dart.score} Pkt.',
-                style: const TextStyle(
-                    fontSize: 10, color: AppColors.textSecondary)),
-        ],
-      ),
-    ).animate(target: hasThrow ? 1 : 0).scaleXY(
-          begin: 0.9,
-          end: 1.0,
-          curve: Curves.elasticOut,
-        );
+              color: has ? AppColors.primary : AppColors.textMuted,
+              fontWeight: FontWeight.w700),
+        ),
+        if (has)
+          Text('${dart.score} Pkt.',
+              style: const TextStyle(
+                  fontSize: 10, color: AppColors.textSecondary)),
+      ]),
+    ).animate(target: has ? 1 : 0).scaleXY(
+          begin: 0.9, end: 1.0, curve: Curves.elasticOut);
   }
 
   String _dartLabel(DartThrow dart) {
@@ -697,49 +635,8 @@ class _CameraScreenState extends State<CameraScreen>
     if (dart.ring == RingType.outerBull) return '25';
     if (dart.ring == RingType.double_) return 'D${dart.segment}';
     if (dart.ring == RingType.triple) return 'T${dart.segment}';
-    if (dart.ring == RingType.miss) return 'Miss';
+    if (dart.ring == RingType.miss) return '?';
     return '${dart.segment}';
-  }
-
-  Widget _buildOverlay() {
-    return CustomPaint(
-      painter: _BoardOverlayPainter(
-        isActive: _isStreaming,
-        dartCount: _detectedDarts.length,
-        hasCalibration: _detector.hasCalibration,
-        calibration: _detector.calibration,
-      ),
-    );
-  }
-
-  Widget _buildProcessingIndicator() {
-    return Align(
-      alignment: Alignment.topCenter,
-      child: Padding(
-        padding: const EdgeInsets.only(top: 16),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.7),
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: const Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              SizedBox(
-                width: 12,
-                height: 12,
-                child: CircularProgressIndicator(
-                    strokeWidth: 2, color: AppColors.primary),
-              ),
-              SizedBox(width: 8),
-              Text('Analysiere...',
-                  style: TextStyle(color: Colors.white, fontSize: 12)),
-            ],
-          ),
-        ),
-      ),
-    );
   }
 }
 
@@ -750,60 +647,55 @@ class _CameraScreenState extends State<CameraScreen>
 class _BoardOverlayPainter extends CustomPainter {
   final bool isActive;
   final int dartCount;
-  final bool hasCalibration;
   final BoardCalibration? calibration;
 
   const _BoardOverlayPainter({
     this.isActive = false,
     this.dartCount = 0,
-    this.hasCalibration = false,
     this.calibration,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
     final color = dartCount >= 3 ? Colors.greenAccent : AppColors.primary;
+    final paint = Paint()
+      ..color = color.withValues(alpha: 0.5)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
 
-    if (hasCalibration && calibration != null) {
-      // Board-Mittelpunkt und Radius aus Kalibrierung
+    if (calibration != null) {
       final cal = calibration!;
-      final scaleX = size.width / cal.imageWidth;
-      final scaleY = size.height / cal.imageHeight;
-      final cx = cal.centerX * scaleX;
-      final cy = cal.centerY * scaleY;
-      final r = cal.radius * ((scaleX + scaleY) / 2);
+      final sx = size.width / cal.imageWidth;
+      final sy = size.height / cal.imageHeight;
+      final cx = cal.centerX * sx;
+      final cy = cal.centerY * sy;
+      final rx = cal.radiusX * sx;
+      final ry = cal.radiusY * sy;
 
-      final paint = Paint()
-        ..color = color.withValues(alpha: 0.5)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2;
-
-      canvas.drawCircle(Offset(cx, cy), r, paint);
-      canvas.drawCircle(Offset(cx, cy), r * 0.65, paint..strokeWidth = 1);
-      canvas.drawCircle(Offset(cx, cy), r * 0.13, paint);
-      canvas.drawCircle(Offset(cx, cy), r * 0.05,
-          Paint()..color = color.withValues(alpha: 0.4));
+      // Ellipse für schräge Ansicht
+      final rect = Rect.fromCenter(center: Offset(cx, cy), width: rx * 2, height: ry * 2);
+      canvas.drawOval(rect, paint);
+      canvas.drawOval(
+          Rect.fromCenter(center: Offset(cx, cy), width: rx * 1.3, height: ry * 1.3),
+          paint..strokeWidth = 1);
+      canvas.drawOval(
+          Rect.fromCenter(center: Offset(cx, cy), width: rx * 0.26, height: ry * 0.26),
+          paint);
+      // Mittelpunkt
+      canvas.drawCircle(Offset(cx, cy), 3,
+          Paint()..color = color.withValues(alpha: 0.8));
     } else {
-      // Standard-Kreis-Overlay (keine Kalibrierung)
       final center = Offset(size.width / 2, size.height / 2);
-      final radius = size.width * 0.35;
-
-      final paint = Paint()
-        ..color = color.withValues(alpha: 0.4)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2;
-
-      canvas.drawCircle(center, radius, paint);
-      canvas.drawCircle(center, radius * 0.6, paint..strokeWidth = 1);
-
-      final dashPaint = Paint()
+      final r = size.width * 0.35;
+      canvas.drawCircle(center, r, paint);
+      canvas.drawCircle(center, r * 0.6, paint..strokeWidth = 1);
+      final d = Paint()
         ..color = color.withValues(alpha: 0.2)
         ..strokeWidth = 1;
-
-      canvas.drawLine(Offset(center.dx - radius, center.dy),
-          Offset(center.dx + radius, center.dy), dashPaint);
-      canvas.drawLine(Offset(center.dx, center.dy - radius),
-          Offset(center.dx, center.dy + radius), dashPaint);
+      canvas.drawLine(Offset(center.dx - r, center.dy),
+          Offset(center.dx + r, center.dy), d);
+      canvas.drawLine(Offset(center.dx, center.dy - r),
+          Offset(center.dx, center.dy + r), d);
     }
   }
 
@@ -811,5 +703,5 @@ class _BoardOverlayPainter extends CustomPainter {
   bool shouldRepaint(_BoardOverlayPainter old) =>
       old.isActive != isActive ||
       old.dartCount != dartCount ||
-      old.hasCalibration != hasCalibration;
+      old.calibration != calibration;
 }
