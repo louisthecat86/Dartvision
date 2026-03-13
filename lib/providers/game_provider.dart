@@ -619,24 +619,92 @@ class GameProvider extends ChangeNotifier {
       final prevPlayer = _game!.currentPlayer;
       if (prevPlayer.rounds.isNotEmpty && prevPlayer.rounds.last.isNotEmpty) {
         final lastThrow = prevPlayer.rounds.last.removeLast();
-        if (_game!.gameType == AppConstants.game501 ||
-            _game!.gameType == AppConstants.game301 ||
-            _game!.gameType == AppConstants.game701) {
-          prevPlayer.scoreRemaining += lastThrow.score;
-        }
+        _reverseThrowScore(prevPlayer, lastThrow);
       }
     } else {
       final lastThrow = currentRound.removeLast();
-      if (_game!.gameType == AppConstants.game501 ||
-          _game!.gameType == AppConstants.game301 ||
-          _game!.gameType == AppConstants.game701) {
-        player.scoreRemaining += lastThrow.score;
-      }
+      _reverseThrowScore(player, lastThrow);
     }
 
     _lastMessage = 'Letzter Wurf rückgängig';
     _game!.addEvent('Undo');
     notifyListeners();
+  }
+
+  /// Kehrt die Auswirkung eines einzelnen Wurfs auf den Spieler-Score um.
+  void _reverseThrowScore(Player player, DartThrow dart) {
+    switch (_game!.gameType) {
+      case AppConstants.game501:
+      case AppConstants.game301:
+      case AppConstants.game701:
+        player.scoreRemaining += dart.score;
+        break;
+      case AppConstants.gameCricket:
+      case AppConstants.gameCutThroat:
+        _reverseCricketThrow(player, dart);
+        break;
+      case AppConstants.gameShanghai:
+        // Nur Treffer auf das Rundenziel zählen
+        if (dart.segment == _game!.shanghaiCurrentRound) {
+          player.shanghaiScore -= dart.score;
+        }
+        break;
+      case AppConstants.gameHighScore:
+        player.highScoreTotal -= dart.score;
+        break;
+      case AppConstants.gameDoubleTraining:
+        player.doubleAttempts--;
+        final target = _game!.doubleTrainingCurrent;
+        final hit = (target == 25)
+            ? dart.ring == RingType.innerBull
+            : (dart.ring == RingType.double_ && dart.segment == target);
+        if (hit) {
+          player.doubleHits--;
+          player.doublesHit[target] = false;
+        }
+        break;
+      // AroundTheClock, Killer, Bob's27 sind schwer rückgängig zu machen
+      // (Zustandsübergänge), daher nur Dart-Entfernung ohne Score-Korrektur
+      default:
+        break;
+    }
+  }
+
+  /// Cricket-Undo: Marks und ggf. Punkte zurücknehmen.
+  void _reverseCricketThrow(Player player, DartThrow dart) {
+    final targetSegments = [...AppConstants.cricketNumbers, 25];
+    final segment = dart.segment;
+    if (!targetSegments.contains(segment)) return;
+
+    int marksToRemove = 1;
+    if (dart.ring == RingType.double_ || dart.ring == RingType.innerBull) {
+      marksToRemove = 2;
+    } else if (dart.ring == RingType.triple) {
+      marksToRemove = 3;
+    }
+
+    final currentMarks = player.cricketMarks[segment] ?? 0;
+    final previousMarks = (currentMarks - marksToRemove).clamp(0, 99);
+    player.cricketMarks[segment] = previousMarks;
+
+    // Punkte rückrechnen: nur Excess-Marks über 3 brachten Punkte
+    if (currentMarks > 3) {
+      final excessNow = currentMarks - 3;
+      final excessBefore = previousMarks > 3 ? previousMarks - 3 : 0;
+      final pointsToRemove = (excessNow - excessBefore) *
+          (segment == 25 ? 25 : segment);
+
+      if (_game!.gameType == AppConstants.gameCutThroat) {
+        for (final p in _game!.players) {
+          if (p.id != player.id &&
+              (p.cricketMarks[segment] ?? 0) < 3) {
+            p.cricketPoints -= pointsToRemove;
+          }
+        }
+      } else {
+        player.cricketPoints -= pointsToRemove;
+      }
+    }
   }
 
   void endGame() {
@@ -660,4 +728,183 @@ class GameProvider extends ChangeNotifier {
     if (remaining > 170 || remaining < 2) return null;
     return ScoreCalculator.suggestCheckout(remaining);
   }
+
+  // ─────────────── Live-Preview für Kamera ───────────────
+
+  /// Simuliert eine Runde (bis zu 3 Darts) ohne den Spielstand zu ändern.
+  /// Gibt für jeden Dart ein Vorschau-Ergebnis zurück.
+  List<ThrowPreview> previewRound(List<DartThrow> darts) {
+    if (_game == null) return [];
+    final gt = _game!.gameType;
+    final player = _game!.currentPlayer;
+    final results = <ThrowPreview>[];
+
+    // Für X01: simuliere Score-Verlauf
+    if (gt == AppConstants.game501 ||
+        gt == AppConstants.game301 ||
+        gt == AppConstants.game701) {
+      int simRemaining = player.scoreRemaining;
+      // Score der bisherigen (noch nicht bestätigten) Würfe in der Runde abziehen
+      final existingRoundScore = player.currentRoundScore;
+      bool busted = false;
+
+      for (final dart in darts) {
+        if (busted) {
+          results.add(ThrowPreview(
+            score: 0,
+            remaining: simRemaining + existingRoundScore,
+            message: '(Bust – zählt nicht)',
+            isBust: true,
+          ));
+          continue;
+        }
+
+        // Double-In Prüfung
+        if (_game!.doubleIn &&
+            player.totalScore == 0 &&
+            results.every((r) => r.isNoScore) &&
+            !dart.isDouble) {
+          results.add(ThrowPreview(
+            score: 0,
+            remaining: simRemaining,
+            message: 'Double-In erforderlich!',
+            isNoScore: true,
+          ));
+          continue;
+        }
+
+        final newScore = simRemaining - dart.score;
+
+        if (newScore < 0 ||
+            (newScore == 1 && _game!.doubleOut) ||
+            (newScore == 0 && _game!.doubleOut && !dart.isDouble)) {
+          busted = true;
+          results.add(ThrowPreview(
+            score: dart.score,
+            remaining: player.scoreRemaining, // Reset bei Bust
+            message: newScore == 0
+                ? 'Bust! Double-Out erforderlich.'
+                : newScore == 1
+                    ? 'Bust! Kann nicht mit 1 beenden.'
+                    : 'Bust! Über 0 hinaus.',
+            isBust: true,
+          ));
+          continue;
+        }
+
+        simRemaining = newScore;
+        results.add(ThrowPreview(
+          score: dart.score,
+          remaining: simRemaining,
+          message: newScore == 0 ? 'Checkout! 🎯' : null,
+          isWon: newScore == 0,
+        ));
+      }
+    } else {
+      // Nicht-X01: Einfache Score-Anzeige
+      for (final dart in darts) {
+        results.add(ThrowPreview(
+          score: dart.score,
+          remaining: 0,
+          message: null,
+        ));
+      }
+    }
+
+    return results;
+  }
+
+  /// Übergibt eine bestätigte Runde an den Spielstand.
+  /// Gibt eine Zusammenfassung zurück (z.B. Bust, Spieler gewechselt, etc.).
+  RoundResult submitRound(List<DartThrow> darts) {
+    if (_game == null || _game!.isGameOver) {
+      return RoundResult(playerBefore: '', scoreBefore: 0, scoreAfter: 0);
+    }
+
+    final playerBefore = _game!.currentPlayer.name;
+    final scoreBefore = _game!.currentPlayer.scoreRemaining;
+    final indexBefore = _game!.currentPlayerIndex;
+
+    for (final dart in darts) {
+      if (_game!.isGameOver) break;
+      // Bust in X01 führt dazu dass addThrow intern _nextPlayer aufruft
+      // und restliche Darts der Runde ignoriert werden.
+      if (_game!.currentPlayerIndex != indexBefore) break;
+      addThrow(dart);
+    }
+
+    // Falls addThrow nicht alle verarbeitet hat (Bust nach Dart 1/2),
+    // sicherstellen dass Spieler gewechselt ist
+    final autoAdvanced = _game!.currentPlayerIndex != indexBefore;
+
+    // Falls alle 3 Darts verarbeitet und kein auto-advance: manuell weiter
+    if (!autoAdvanced && !_game!.isGameOver) {
+      // addThrow ruft _nextPlayer intern auf bei 3 Darts.
+      // Hier nichts extra tun.
+    }
+
+    return RoundResult(
+      playerBefore: playerBefore,
+      scoreBefore: scoreBefore,
+      scoreAfter: _game!.isGameOver
+          ? 0
+          : _game!.players
+              .firstWhere((p) => p.name == playerBefore)
+              .scoreRemaining,
+      message: _lastMessage,
+      gameOver: _game!.isGameOver,
+      winnerName: _game!.winner?.name,
+    );
+  }
+
+  /// Aktueller Spieler-Info für Kamera-HUD.
+  String get currentPlayerName =>
+      _game?.currentPlayer.name ?? '';
+
+  int get currentPlayerScore =>
+      _game?.currentPlayer.scoreRemaining ?? 0;
+
+  int get currentPlayerDartsInRound =>
+      _game?.currentPlayer.currentRound.length ?? 0;
+
+  String get gameTypeDisplay =>
+      _game?.gameType ?? '';
+}
+
+/// Vorschau eines einzelnen Wurfs (ohne Commit).
+class ThrowPreview {
+  final int score;
+  final int remaining;
+  final String? message;
+  final bool isBust;
+  final bool isNoScore;
+  final bool isWon;
+
+  const ThrowPreview({
+    required this.score,
+    required this.remaining,
+    this.message,
+    this.isBust = false,
+    this.isNoScore = false,
+    this.isWon = false,
+  });
+}
+
+/// Ergebnis einer bestätigten Runde.
+class RoundResult {
+  final String playerBefore;
+  final int scoreBefore;
+  final int scoreAfter;
+  final String? message;
+  final bool gameOver;
+  final String? winnerName;
+
+  const RoundResult({
+    required this.playerBefore,
+    required this.scoreBefore,
+    required this.scoreAfter,
+    this.message,
+    this.gameOver = false,
+    this.winnerName,
+  });
 }

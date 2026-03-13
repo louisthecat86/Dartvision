@@ -28,10 +28,11 @@ class _BoardCalibrationScreenState extends State<BoardCalibrationScreen> {
   Uint8List? _capturedBytes;
   bool _showPhotoEditor = false;
 
-  // Kalibrierungspunkte
-  Offset? _center;
-  double? _radius; // euklidische Distanz in Pixel der Vorschau
-  Size? _previewRenderSize; // tatsächliche Render-Größe des Bildes
+  // 3-Punkt-Kalibrierung: Bullseye, Rand bei 20, Rand bei 6
+  Offset? _center;     // Bullseye
+  Offset? _point20;    // Außenrand beim Segment 20 (oben)
+  Offset? _point6;     // Außenrand beim Segment 6 (rechts)
+  Size? _previewRenderSize;
 
   @override
   void initState() {
@@ -83,7 +84,8 @@ class _BoardCalibrationScreenState extends State<BoardCalibrationScreen> {
         _capturedBytes = bytes;
         _showPhotoEditor = true;
         _center = null;
-        _radius = null;
+        _point20 = null;
+        _point6 = null;
         _isSaving = false;
       });
     } catch (e) {
@@ -95,7 +97,8 @@ class _BoardCalibrationScreenState extends State<BoardCalibrationScreen> {
   }
 
   Future<void> _saveCalibration() async {
-    if (_capturedBytes == null || _center == null || _radius == null) return;
+    if (_capturedBytes == null || _center == null ||
+        _point20 == null || _point6 == null) return;
     if (_previewRenderSize == null) return;
     setState(() => _isSaving = true);
 
@@ -106,11 +109,26 @@ class _BoardCalibrationScreenState extends State<BoardCalibrationScreen> {
     const refW = 480.0;
     const refH = 360.0;
 
+    // Vektoren von Mitte zu den Markierungspunkten
+    final v20dx = _point20!.dx - _center!.dx;
+    final v20dy = _point20!.dy - _center!.dy;
+    final v6dx = _point6!.dx - _center!.dx;
+    final v6dy = _point6!.dy - _center!.dy;
+
+    // Radien (Pixel-Distanzen)
+    final r20 = math.sqrt(v20dx * v20dx + v20dy * v20dy);
+    final r6 = math.sqrt(v6dx * v6dx + v6dy * v6dy);
+
+    // Rotation: Winkel der 20-Richtung relativ zu Bild-Oben
+    // atan2 in Bild-Koordinaten (Y nach unten), + π/2 verschiebt Nullpunkt auf "oben"
+    final rotation = math.atan2(v20dy, v20dx) + math.pi / 2;
+
     final cal = BoardCalibration(
       centerX: (_center!.dx / pw) * refW,
       centerY: (_center!.dy / ph) * refH,
-      radiusX: (_radius! / pw) * refW,
-      radiusY: (_radius! / pw) * refW,
+      radiusX: (r6 / pw) * refW,   // Halbachse Richtung 6 (Board-Horizontal)
+      radiusY: (r20 / ph) * refH,  // Halbachse Richtung 20 (Board-Vertikal)
+      rotation: rotation,
       imageWidth: refW.toInt(),
       imageHeight: refH.toInt(),
     );
@@ -243,7 +261,10 @@ class _BoardCalibrationScreenState extends State<BoardCalibrationScreen> {
   // ─── FOTO-EDITOR ─────────────────────────────────────────
 
   Widget _buildPhotoEditor() {
-    final step = _center == null ? 1 : (_radius == null ? 2 : 3);
+    final step = _center == null ? 1
+        : _point20 == null ? 2
+        : _point6 == null ? 3
+        : 4;
     return Column(
       children: [
         Container(
@@ -270,14 +291,10 @@ class _BoardCalibrationScreenState extends State<BoardCalibrationScreen> {
               onTapDown: (d) {
                 if (_center == null) {
                   setState(() => _center = d.localPosition);
-                }
-              },
-              onPanUpdate: (d) {
-                if (_center != null) {
-                  final dx = d.localPosition.dx - _center!.dx;
-                  final dy = d.localPosition.dy - _center!.dy;
-                  final r = math.sqrt(dx * dx + dy * dy);
-                  if (r > 5) setState(() => _radius = r);
+                } else if (_point20 == null) {
+                  setState(() => _point20 = d.localPosition);
+                } else if (_point6 == null) {
+                  setState(() => _point6 = d.localPosition);
                 }
               },
               child: ClipRect(
@@ -289,7 +306,8 @@ class _BoardCalibrationScreenState extends State<BoardCalibrationScreen> {
                       CustomPaint(
                         painter: _CalibrationPainter(
                           center: _center!,
-                          radius: _radius,
+                          point20: _point20,
+                          point6: _point6,
                         ),
                       ),
                   ],
@@ -307,7 +325,8 @@ class _BoardCalibrationScreenState extends State<BoardCalibrationScreen> {
                 child: OutlinedButton.icon(
                   onPressed: () => setState(() {
                     _center = null;
-                    _radius = null;
+                    _point20 = null;
+                    _point6 = null;
                   }),
                   icon: const Icon(Icons.undo_rounded, size: 18),
                   label: const Text('Neu markieren'),
@@ -323,7 +342,7 @@ class _BoardCalibrationScreenState extends State<BoardCalibrationScreen> {
                 flex: 2,
                 child: ElevatedButton.icon(
                   onPressed:
-                      (_center != null && _radius != null && !_isSaving)
+                      (_center != null && _point20 != null && _point6 != null && !_isSaving)
                           ? _saveCalibration
                           : null,
                   icon: _isSaving
@@ -348,16 +367,17 @@ class _BoardCalibrationScreenState extends State<BoardCalibrationScreen> {
 
   Widget _buildStepHint(int step) {
     final texts = [
-      '① Tippe auf den MITTELPUNKT (Bullseye) des Boards',
-      '② Ziehe vom Mittelpunkt bis zum Außenrand des Boards',
-      '✓ Fertig – Board erkannt! Kalibrierung speichern.',
+      '① Tippe auf den MITTELPUNKT (Bullseye)',
+      '② Tippe auf den Außenrand beim Segment 20 (oben)',
+      '③ Tippe auf den Außenrand beim Segment 6 (rechts)',
+      '✓ Fertig! Board mit Rotation & Perspektive erkannt.',
     ];
     return Text(
       texts[step - 1],
       style: TextStyle(
-        color: step == 3 ? AppColors.primary : AppColors.textSecondary,
+        color: step == 4 ? AppColors.primary : AppColors.textSecondary,
         fontSize: 13,
-        fontWeight: step == 3 ? FontWeight.w600 : FontWeight.normal,
+        fontWeight: step == 4 ? FontWeight.w600 : FontWeight.normal,
       ),
     );
   }
@@ -401,12 +421,18 @@ class _CameraGuidePainter extends CustomPainter {
 
 class _CalibrationPainter extends CustomPainter {
   final Offset center;
-  final double? radius;
+  final Offset? point20;
+  final Offset? point6;
 
-  const _CalibrationPainter({required this.center, this.radius});
+  const _CalibrationPainter({
+    required this.center,
+    this.point20,
+    this.point6,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
+    // Bullseye-Kreuz
     final crossPaint = Paint()
       ..color = AppColors.primary
       ..strokeWidth = 2.5
@@ -417,45 +443,84 @@ class _CalibrationPainter extends CustomPainter {
     canvas.drawCircle(center, 6,
         Paint()..color = AppColors.primary..style = PaintingStyle.fill);
 
-    if (radius != null && radius! > 10) {
-      final r = radius!;
-      canvas.drawCircle(
-          center,
-          r,
+    void _drawMarker(Offset point, Color color, String label) {
+      canvas.drawCircle(point, 8,
+          Paint()..color = color..style = PaintingStyle.fill);
+      canvas.drawCircle(point, 8,
           Paint()
-            ..color = AppColors.primary.withValues(alpha: 0.6)
+            ..color = Colors.white.withValues(alpha: 0.8)
             ..style = PaintingStyle.stroke
-            ..strokeWidth = 2.5);
-      canvas.drawCircle(
-          center,
-          r * 0.65,
+            ..strokeWidth = 2);
+      // Linie vom Center
+      canvas.drawLine(center, point,
           Paint()
-            ..color = AppColors.primary.withValues(alpha: 0.3)
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 1.5);
-      canvas.drawCircle(
-          center,
-          r * 0.13,
-          Paint()
-            ..color = Colors.green.withValues(alpha: 0.5)
-            ..style = PaintingStyle.fill);
+            ..color = color.withValues(alpha: 0.5)
+            ..strokeWidth = 1.5
+            ..strokeCap = StrokeCap.round);
       // Label
       final tp = TextPainter(
         text: TextSpan(
-          text: '  ← Außenrand',
+          text: ' $label',
           style: TextStyle(
-              color: AppColors.primary.withValues(alpha: 0.8),
-              fontSize: 11,
-              fontWeight: FontWeight.w600),
+            color: color,
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+          ),
         ),
         textDirection: TextDirection.ltr,
       );
       tp.layout();
-      tp.paint(canvas, Offset(center.dx + r * 0.3, center.dy - r - 16));
+      tp.paint(canvas, point.translate(10, -8));
+    }
+
+    if (point20 != null) {
+      _drawMarker(point20!, Colors.green, '20');
+    }
+
+    if (point6 != null) {
+      _drawMarker(point6!, Colors.orange, '6');
+    }
+
+    // Ellipse zeichnen wenn beide Punkte gesetzt
+    if (point20 != null && point6 != null) {
+      final r20 = (point20! - center).distance;
+      final r6 = (point6! - center).distance;
+      final angle20 = math.atan2(
+          point20!.dy - center.dy, point20!.dx - center.dx);
+
+      canvas.save();
+      canvas.translate(center.dx, center.dy);
+      canvas.rotate(angle20 + math.pi / 2);
+
+      // Ellipse: radiusY = r20 (Richtung 20), radiusX = r6 (Richtung 6)
+      final rect = Rect.fromCenter(
+        center: Offset.zero,
+        width: r6 * 2,
+        height: r20 * 2,
+      );
+      canvas.drawOval(
+          rect,
+          Paint()
+            ..color = AppColors.primary.withValues(alpha: 0.6)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2.5);
+      canvas.drawOval(
+          Rect.fromCenter(center: Offset.zero, width: r6 * 1.3, height: r20 * 1.3),
+          Paint()
+            ..color = AppColors.primary.withValues(alpha: 0.3)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.5);
+      canvas.drawOval(
+          Rect.fromCenter(center: Offset.zero, width: r6 * 0.26, height: r20 * 0.26),
+          Paint()
+            ..color = Colors.green.withValues(alpha: 0.5)
+            ..style = PaintingStyle.fill);
+
+      canvas.restore();
     }
   }
 
   @override
   bool shouldRepaint(_CalibrationPainter old) =>
-      old.center != center || old.radius != radius;
+      old.center != center || old.point20 != point20 || old.point6 != point6;
 }

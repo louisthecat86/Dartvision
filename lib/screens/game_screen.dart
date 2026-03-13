@@ -230,14 +230,7 @@ class _GameScreenState extends State<GameScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => CameraScreen(
-          onDartsDetected: (darts) {
-            final gp = context.read<GameProvider>();
-            for (final dart in darts) {
-              gp.addThrow(dart);
-            }
-          },
-        ),
+        builder: (_) => const CameraScreen(),
       ),
     );
   }

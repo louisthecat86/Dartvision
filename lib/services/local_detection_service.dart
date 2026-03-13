@@ -3,14 +3,18 @@ import 'dart:typed_data';
 import '../config/constants.dart';
 import '../models/dart_throw.dart';
 
-/// Kalibrierdaten: Mittelpunkt + Ellipsen-Radien für schräge Kamerawinkel.
-/// radiusX = horizontaler Radius, radiusY = vertikaler Radius
-/// (kleiner als radiusX wenn die Kamera von der Seite filmt)
+/// Kalibrierdaten: Mittelpunkt + Ellipsen-Radien + Rotation.
+///
+/// 3-Punkt-Kalibrierung: Benutzer markiert Bullseye, Außenrand bei 20 und bei 6.
+/// radiusX = Halbachse in Richtung Segment 6 (Board-Horizontale)
+/// radiusY = Halbachse in Richtung Segment 20 (Board-Vertikale)
+/// rotation = Drehwinkel des Boards in Rad (0 = 20 zeigt nach oben im Bild)
 class BoardCalibration {
   final double centerX;
   final double centerY;
   final double radiusX;
   final double radiusY;
+  final double rotation;
   final int imageWidth;
   final int imageHeight;
 
@@ -19,6 +23,7 @@ class BoardCalibration {
     required this.centerY,
     required this.radiusX,
     required this.radiusY,
+    this.rotation = 0.0,
     required this.imageWidth,
     required this.imageHeight,
   });
@@ -33,6 +38,7 @@ class BoardCalibration {
       centerY: (json['centerY'] as num).toDouble(),
       radiusX: rx,
       radiusY: ry,
+      rotation: (json['rotation'] as num?)?.toDouble() ?? 0.0,
       imageWidth: (json['imageWidth'] as num).toInt(),
       imageHeight: (json['imageHeight'] as num).toInt(),
     );
@@ -43,6 +49,7 @@ class BoardCalibration {
         'centerY': centerY,
         'radiusX': radiusX,
         'radiusY': radiusY,
+        'rotation': rotation,
         'imageWidth': imageWidth,
         'imageHeight': imageHeight,
       };
@@ -248,7 +255,7 @@ class LocalDetectionService {
     return result.take(3).toList();
   }
 
-  /// Pixelposition → Dart-Wurf mit Ellipsen-Normalisierung für schräge Winkel.
+  /// Pixelposition → Dart-Wurf mit Ellipsen- und Rotations-Normalisierung.
   DartThrow _positionToDart(_Pos pos, int width, int height) {
     final cal = _calibration!;
     final scaleX = width / cal.imageWidth;
@@ -261,10 +268,17 @@ class LocalDetectionService {
     final dx = pos.x - cx;
     final dy = pos.y - cy;
 
-    // Ellipsen-Normalisierung: transformiert elliptische Scheibe → Einheitskreis
-    // Das korrigiert automatisch den schrägen Kamerawinkel
-    final normX = rx > 0 ? dx / rx : dx;
-    final normY = ry > 0 ? dy / ry : dy;
+    // Schritt 1: Rotation rückgängig machen (Board in Bildausrichtung drehen)
+    // rotation = 0 bedeutet 20 zeigt nach oben im Bild.
+    // Positive Rotation = Board im Uhrzeigersinn gedreht.
+    final cosR = math.cos(-cal.rotation);
+    final sinR = math.sin(-cal.rotation);
+    final adx = dx * cosR - dy * sinR;
+    final ady = dx * sinR + dy * cosR;
+
+    // Schritt 2: Ellipsen-Normalisierung (Perspektivkorrektur)
+    final normX = rx > 0 ? adx / rx : adx;
+    final normY = ry > 0 ? ady / ry : ady;
     final relDist = math.sqrt(normX * normX + normY * normY);
 
     final ring = _ringFromRelDist(relDist);
@@ -272,12 +286,27 @@ class LocalDetectionService {
       return DartThrow(segment: 0, ring: RingType.miss, confidence: 0.5);
     }
 
-    // Winkel im normierten Raum — korrekt auch bei Schrägansicht
+    // Bull/Bullseye: Segment muss 25 sein (nicht aus Winkel berechnen)
+    if (ring == RingType.innerBull || ring == RingType.outerBull) {
+      return DartThrow(
+        segment: 25,
+        ring: ring,
+        confidence: math.min(1.0, pos.strength / 35.0),
+      );
+    }
+
+    // Schritt 3: Winkel im normierten Board-Raum berechnen.
+    // atan2 mit Y-nach-unten: Winkel wächst im Uhrzeigersinn.
+    // +π/2 verschiebt den Nullpunkt von "rechts" nach "oben" (= Segment 20).
     double angle = math.atan2(normY, normX) + math.pi / 2;
     if (angle < 0) angle += 2 * math.pi;
     if (angle >= 2 * math.pi) angle -= 2 * math.pi;
-    double adjusted = angle - (math.pi / 20);
-    if (adjusted < 0) adjusted += 2 * math.pi;
+
+    // Offset um halbe Segmentbreite, damit Segmentgrenzen korrekt zentriert sind.
+    // Jedes Segment = 2π/20 = π/10 breit. +π/20 verschiebt so, dass
+    // angle=0 (Mitte der 20) auf segIndex=0 abgebildet wird.
+    double adjusted = angle + (math.pi / 20);
+    if (adjusted >= 2 * math.pi) adjusted -= 2 * math.pi;
 
     final segIndex = (adjusted / (2 * math.pi / 20)).floor() % 20;
     final segment = AppConstants.boardOrder[segIndex];
