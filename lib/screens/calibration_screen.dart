@@ -95,13 +95,11 @@ class _CalibrationScreenState extends State<CalibrationScreen> {
       setState(() {
         _calibrationDone = true;
         _isCapturing = false;
-        _statusMessage = null;
       });
     } catch (e) {
       setState(() {
         _errorMessage = 'Fehler: $e';
         _isCapturing = false;
-        _statusMessage = null;
       });
     }
   }
