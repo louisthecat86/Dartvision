@@ -132,7 +132,7 @@ class _GameScreenState extends State<GameScreen> {
   }
 
   Widget _buildInputToggle() {
-    final hasApiKey = context.read<SettingsProvider>().hasApiKey;
+    final hasApiKey = true; // Kamera immer verfügbar – kein API-Key nötig
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       child: Row(

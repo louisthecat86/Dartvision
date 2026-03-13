@@ -22,7 +22,7 @@ class HomeScreen extends StatelessWidget {
               _buildLogo(context),
               const SizedBox(height: 12),
               Text(
-                'KI-gesteuerter Dart Tracker',
+                'Lokale Kamera-Erkennung',
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       color: AppColors.textSecondary,
                       letterSpacing: 2,
@@ -50,11 +50,11 @@ class HomeScreen extends StatelessWidget {
               const SizedBox(height: 16),
               Consumer<SettingsProvider>(
                 builder: (context, settings, _) {
-                  return _buildStatusChip(context, hasKey: settings.hasApiKey);
+                  return _buildStatusChip(context, hasCalibration: settings.hasBoardCalibration);
                 },
               ),
               const Spacer(flex: 3),
-              Text('Powered by Google Gemini AI',
+              Text('Lokale Dart-Erkennung – kein API nötig',
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       color: AppColors.textMuted, fontSize: 12)),
               const SizedBox(height: 24),
@@ -144,15 +144,15 @@ class HomeScreen extends StatelessWidget {
     ).animate().fadeIn(delay: 300.ms).slideY(begin: 0.2);
   }
 
-  Widget _buildStatusChip(BuildContext context, {required bool hasKey}) {
+  Widget _buildStatusChip(BuildContext context, {required bool hasCalibration}) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       decoration: BoxDecoration(
-        color: (hasKey ? AppColors.primary : AppColors.accentOrange)
+        color: (hasCalibration ? AppColors.primary : AppColors.accentOrange)
             .withValues(alpha: 0.1),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
-          color: (hasKey ? AppColors.primary : AppColors.accentOrange)
+          color: (hasCalibration ? AppColors.primary : AppColors.accentOrange)
               .withValues(alpha: 0.3),
         ),
       ),
@@ -160,15 +160,15 @@ class HomeScreen extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(
-            hasKey ? Icons.check_circle : Icons.warning_amber_rounded,
+            hasCalibration ? Icons.check_circle : Icons.warning_amber_rounded,
             size: 16,
-            color: hasKey ? AppColors.primary : AppColors.accentOrange,
+            color: hasCalibration ? AppColors.primary : AppColors.accentOrange,
           ),
           const SizedBox(width: 8),
           Text(
-            hasKey ? 'KI bereit' : 'API-Key fehlt – Einstellungen',
+            hasCalibration ? 'Kamera kalibriert' : 'Board kalibrieren – Einstellungen',
             style: TextStyle(
-              color: hasKey ? AppColors.primary : AppColors.accentOrange,
+              color: hasCalibration ? AppColors.primary : AppColors.accentOrange,
               fontSize: 13,
               fontWeight: FontWeight.w600,
             ),
