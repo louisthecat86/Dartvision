@@ -78,9 +78,15 @@ class RoboflowDetectionService implements DetectionService {
           body: 'imageToUpload=$base64Image',
         ).timeout(const Duration(seconds: 10));
         
-        if (response.statusCode == 200) return _parseRoboflowResponse(response.body);
-        if (response.statusCode == 401) throw Exception('API Key ungültig');
-        if (response.statusCode == 404) throw Exception('Modell nicht gefunden');
+        if (response.statusCode == 200) {
+          return _parseRoboflowResponse(response.body);
+        }
+        if (response.statusCode == 401) {
+          throw Exception('API Key ungültig');
+        }
+        if (response.statusCode == 404) {
+          throw Exception('Modell nicht gefunden');
+        }
       } catch (e) {
         if (attempt < 1) await Future.delayed(const Duration(milliseconds: 500));
         else rethrow;

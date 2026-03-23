@@ -99,7 +99,9 @@ class _BoardCalibrationScreenState extends State<BoardCalibrationScreen> {
   Future<void> _saveCalibration() async {
     if (_capturedBytes == null || _center == null ||
         _point20 == null || _point6 == null) return;
-    if (_previewRenderSize == null) return;
+    if (_previewRenderSize == null) {
+      return;
+    }
     setState(() => _isSaving = true);
 
     final pw = _previewRenderSize!.width;
@@ -443,7 +445,7 @@ class _CalibrationPainter extends CustomPainter {
     canvas.drawCircle(center, 6,
         Paint()..color = AppColors.primary..style = PaintingStyle.fill);
 
-    void _drawMarker(Offset point, Color color, String label) {
+    void drawMarker(Offset point, Color color, String label) {
       canvas.drawCircle(point, 8,
           Paint()..color = color..style = PaintingStyle.fill);
       canvas.drawCircle(point, 8,
@@ -474,11 +476,11 @@ class _CalibrationPainter extends CustomPainter {
     }
 
     if (point20 != null) {
-      _drawMarker(point20!, Colors.green, '20');
+      drawMarker(point20!, Colors.green, '20');
     }
 
     if (point6 != null) {
-      _drawMarker(point6!, Colors.orange, '6');
+      drawMarker(point6!, Colors.orange, '6');
     }
 
     // Ellipse zeichnen wenn beide Punkte gesetzt

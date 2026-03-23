@@ -86,25 +86,32 @@ class LocalDetectionService implements DetectionService {
   int _refWidth = 0;
   int _refHeight = 0;
 
+  @override
   bool get hasCalibration => _calibration != null;
+  @override
   bool get hasReference => _referenceY != null;
+  @override
   BoardCalibration? get calibration => _calibration;
 
+  @override
   void setCalibration(BoardCalibration cal) => _calibration = cal;
 
   /// Speichert Y-Plane-Frame als Referenz (leeres Board, keine Pfeile).
+  @override
   void setReferenceFromYPlane(Uint8List yPlane, int width, int height) {
     _referenceY = Uint8List.fromList(yPlane);
     _refWidth = width;
     _refHeight = height;
   }
 
+  @override
   void clearReference() {
     _referenceY = null;
   }
 
   /// Schneller Bewegungscheck direkt auf rohen Y-Plane-Bytes.
   /// KEIN img.decodeImage() — kein Fehler, kein Freeze.
+  @override
   bool hasMotionInYPlane(Uint8List currentY, int width, int height) {
     if (_referenceY == null) return false;
 

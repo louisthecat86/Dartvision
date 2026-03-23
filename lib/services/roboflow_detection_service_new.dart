@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../models/dart_throw.dart';
@@ -17,10 +16,6 @@ class RoboflowDetectionService implements DetectionService {
 
   static const int requestTimeoutSeconds = 10;
   static const int maxRetries = 2;
-
-  // Cache für erfolgreiche Anfragen
-  DateTime? _lastSuccessfulRequest;
-  bool _apiAvailable = false;
 
   RoboflowDetectionService({this.apiKey, this.modelEndpoint});
 
@@ -126,7 +121,7 @@ class RoboflowDetectionService implements DetectionService {
         } else if (response.statusCode == 404) {
           throw Exception('Roboflow Modell nicht gefunden (404)');
         } else {
-          throw Exception(
+          throw const Exception(
               'Roboflow API Fehler: ${response.statusCode} - ${response.body}');
         }
       } catch (e) {

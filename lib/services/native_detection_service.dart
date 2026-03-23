@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:typed_data';
 import 'dart:math' as math;
 import 'package:flutter/services.dart';
 import '../models/dart_throw.dart';
@@ -28,14 +27,11 @@ class NativeDetectionService implements DetectionService {
     switch (call.method) {
       case 'onSetupSuccess':
         _isSetup = true;
-        print('Detector setup successful');
         break;
       case 'onSetupFailed':
         _isSetup = false;
-        print('Detector setup failed: ${call.arguments}');
         break;
       case 'onCannotDetect':
-        print('Cannot detect: ${call.arguments}');
         break;
       case 'onDetectionResult':
         final args = call.arguments as Map<dynamic, dynamic>;
@@ -127,7 +123,7 @@ class NativeDetectionService implements DetectionService {
     try {
       await platform.invokeMethod('setupDetector');
     } on PlatformException catch (e) {
-      print('Failed to setup detector: ${e.message}');
+      // Failed to setup detector
     }
   }
 
@@ -187,7 +183,6 @@ class NativeDetectionService implements DetectionService {
 
       return result;
     } catch (e) {
-      print('Native detection failed: $e');
       return _fallback.detectFromYPlane(currentY, width, height);
     } finally {
       _resultController?.close();

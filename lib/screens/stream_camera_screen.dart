@@ -87,11 +87,6 @@ class _CameraScreenState extends State<CameraScreen>
     if (cal != null) _detector.setCalibration(cal);
   }
 
-  Future<void> _loadCalibration() async {
-    final cal = context.read<SettingsProvider>().boardCalibration;
-    if (cal != null) _detector.setCalibration(cal);
-  }
-
   Future<void> _initCamera() async {
     try {
       final cameras = await availableCameras();
@@ -188,6 +183,11 @@ class _CameraScreenState extends State<CameraScreen>
   Future<void> _analyze() async {
     if (_phase != _CameraPhase.detecting || _latestY == null || _isProcessing) return;
     _isProcessing = true;
+
+    // Read providers before async operations to avoid use_build_context_synchronously
+    final settings = context.read<SettingsProvider>();
+    final gp = context.read<GameProvider>();
+
     try {
       final y = _latestY!;
       final w = _latestWidth;

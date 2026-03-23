@@ -209,7 +209,7 @@ class SettingsScreen extends StatelessWidget {
                   fontWeight: FontWeight.w700,
                   color: AppColors.textPrimary)),
           const SizedBox(height: 8),
-          Text(
+          const Text(
             'Optional: Aktiviere Roboflow-Erkennung. Ohne API Key wird die lokale Erkennung genutzt.',
             style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
           ),

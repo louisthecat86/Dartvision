@@ -818,7 +818,7 @@ class GameProvider extends ChangeNotifier {
   /// Gibt eine Zusammenfassung zurück (z.B. Bust, Spieler gewechselt, etc.).
   RoundResult submitRound(List<DartThrow> darts) {
     if (_game == null || _game!.isGameOver) {
-      return RoundResult(playerBefore: '', scoreBefore: 0, scoreAfter: 0);
+      return const RoundResult(playerBefore: '', scoreBefore: 0, scoreAfter: 0);
     }
 
     final playerBefore = _game!.currentPlayer.name;
