@@ -106,6 +106,11 @@ class SettingsProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> setVibrationEnabled(bool value) async {
+    await _prefs.setBool(_keyVibrationEnabled, value);
+    notifyListeners();
+  }
+
   bool get useRoboflow => _prefs.getBool(_keyUseRoboflow) ?? false;
   bool get useNativeAI => _prefs.getBool(_keyUseNativeAI) ?? false;
   String get roboflowApiKey => _prefs.getString(_keyRoboflowApiKey) ?? '';
