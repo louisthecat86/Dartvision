@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import '../config/constants.dart';
 import '../models/dart_throw.dart';
+import 'detection_service.dart';
 
 /// Kalibrierdaten: Mittelpunkt + Ellipsen-Radien + Rotation.
 ///
@@ -74,7 +75,7 @@ class DetectionResult {
 ///
 /// Ellipsenmodell für schräge Kamerawinkel:
 /// radiusX ≠ radiusY kompensiert Perspektivverzerrung automatisch.
-class LocalDetectionService {
+class LocalDetectionService implements DetectionService {
   static const int _sampleStep = 3;
   static const double _globalThreshold = 8.0;
   static const double _centerThreshold = 12.0;
@@ -143,7 +144,8 @@ class LocalDetectionService {
   }
 
   /// Erkennt Dart-Positionen aus Y-Plane-Differenz und gibt Würfe zurück.
-  DetectionResult detectFromYPlane(Uint8List currentY, int width, int height) {
+  @override
+  Future<DetectionResult> detectFromYPlane(Uint8List currentY, int width, int height) async {
     if (_referenceY == null) {
       return DetectionResult(darts: [], error: 'Kein Referenzbild – Neustart nötig');
     }
@@ -168,6 +170,18 @@ class LocalDetectionService {
     } catch (e) {
       return DetectionResult(darts: [], error: 'Erkennungsfehler: $e');
     }
+  }
+
+  @override
+  Future<void> submitCorrection({
+    required Uint8List yPlane,
+    required int width,
+    required int height,
+    required List<DartThrow> detected,
+    required List<DartThrow> corrected,
+  }) async {
+    // Lokaler Modus speichert kein Training, kann später erweitert werden.
+    return;
   }
 
   // ── PRIVATE ──────────────────────────────────────────────────────

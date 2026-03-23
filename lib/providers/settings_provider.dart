@@ -18,6 +18,10 @@ class SettingsProvider extends ChangeNotifier {
   static const _keyVibrationEnabled = 'vibration_enabled';
   static const _keyHasCalibration = 'has_calibration_image';
   static const _keyBoardCalibration = 'board_calibration_json';
+  static const _keyUseRoboflow = 'use_roboflow_detection';
+  static const _keyUseNativeAI = 'use_native_ai_detection';
+  static const _keyRoboflowApiKey = 'roboflow_api_key';
+  static const _keyRoboflowEndpoint = 'roboflow_endpoint';
   static const _calibrationFileName = 'calibration_board.jpg';
 
   // Board-Kalibrierung
@@ -102,8 +106,28 @@ class SettingsProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> setVibrationEnabled(bool value) async {
-    await _prefs.setBool(_keyVibrationEnabled, value);
+  bool get useRoboflow => _prefs.getBool(_keyUseRoboflow) ?? false;
+  bool get useNativeAI => _prefs.getBool(_keyUseNativeAI) ?? false;
+  String get roboflowApiKey => _prefs.getString(_keyRoboflowApiKey) ?? '';
+  String get roboflowEndpoint => _prefs.getString(_keyRoboflowEndpoint) ?? '';
+
+  Future<void> setUseRoboflow(bool value) async {
+    await _prefs.setBool(_keyUseRoboflow, value);
+    notifyListeners();
+  }
+
+  Future<void> setUseNativeAI(bool value) async {
+    await _prefs.setBool(_keyUseNativeAI, value);
+    notifyListeners();
+  }
+
+  Future<void> setRoboflowApiKey(String value) async {
+    await _prefs.setString(_keyRoboflowApiKey, value);
+    notifyListeners();
+  }
+
+  Future<void> setRoboflowEndpoint(String value) async {
+    await _prefs.setString(_keyRoboflowEndpoint, value);
     notifyListeners();
   }
 

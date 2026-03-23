@@ -10,7 +10,10 @@ import '../config/theme.dart';
 import '../models/dart_throw.dart';
 import '../providers/game_provider.dart';
 import '../providers/settings_provider.dart';
+import '../services/detection_service.dart';
 import '../services/local_detection_service.dart';
+import '../services/roboflow_detection_service.dart';
+import '../services/native_detection_service.dart';
 import '../widgets/dart_edit_sheet.dart';
 import 'board_calibration_screen.dart';
 
@@ -32,7 +35,7 @@ class CameraScreen extends StatefulWidget {
 class _CameraScreenState extends State<CameraScreen>
     with WidgetsBindingObserver {
   CameraController? _controller;
-  final LocalDetectionService _detector = LocalDetectionService();
+  DetectionService _detector = LocalDetectionService();
 
   bool _isInitialized = false;
   bool _isStreaming = false;
@@ -59,8 +62,29 @@ class _CameraScreenState extends State<CameraScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _loadCalibration();
-    _initCamera();
+    _initDetectorAndCamera();
+  }
+
+  Future<void> _initDetectorAndCamera() async {
+    await _initDetector();
+    await _initCamera();
+  }
+
+  Future<void> _initDetector() async {
+    final settings = context.read<SettingsProvider>();
+    if (settings.useNativeAI) {
+      _detector = NativeDetectionService();
+    } else if (settings.useRoboflow) {
+      _detector = RoboflowDetectionService(
+        apiKey: settings.roboflowApiKey,
+        modelEndpoint: settings.roboflowEndpoint,
+      );
+    } else {
+      _detector = LocalDetectionService();
+    }
+
+    final cal = settings.boardCalibration;
+    if (cal != null) _detector.setCalibration(cal);
   }
 
   Future<void> _loadCalibration() async {
@@ -182,7 +206,7 @@ class _CameraScreenState extends State<CameraScreen>
       _zeroStreak = 0;
       if (mounted) setState(() => _statusMessage = 'Pfeil erkannt...');
 
-      final result = _detector.detectFromYPlane(y, w, h);
+      final result = await _detector.detectFromYPlane(y, w, h);
       if (!mounted) return;
       if (result.hasError) {
         setState(() => _statusMessage = result.error);
@@ -246,8 +270,19 @@ class _CameraScreenState extends State<CameraScreen>
     );
   }
 
-  void _commitRound(List<DartThrow> confirmed) {
+  Future<void> _commitRound(List<DartThrow> confirmed) async {
     final gp = context.read<GameProvider>();
+
+    if (_latestY != null) {
+      await _detector.submitCorrection(
+        yPlane: _latestY!,
+        width: _latestWidth,
+        height: _latestHeight,
+        detected: _detectedDarts,
+        corrected: confirmed,
+      );
+    }
+
     final result = gp.submitRound(confirmed);
 
     if (mounted) {
@@ -297,7 +332,7 @@ class _CameraScreenState extends State<CameraScreen>
       MaterialPageRoute(builder: (_) => const BoardCalibrationScreen()),
     );
     if (mounted) {
-      await _loadCalibration();
+      await _initDetector();
       _prepareNextPlayer();
     }
   }

@@ -55,6 +55,13 @@ class SettingsScreen extends StatelessWidget {
 
               const SizedBox(height: 32),
 
+              // Erkennung
+              _buildSectionHeader('Erkennung (Roboflow / lokal)', Icons.computer_rounded),
+              const SizedBox(height: 12),
+              _buildRoboflowCard(context, settings),
+
+              const SizedBox(height: 32),
+
               // Über
               _buildSectionHeader('Über DartVision', Icons.info_outline_rounded),
               const SizedBox(height: 12),
@@ -188,6 +195,77 @@ class SettingsScreen extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildRoboflowCard(BuildContext context, SettingsProvider settings) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('Roboflow / YOLO Integration',
+              style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textPrimary)),
+          const SizedBox(height: 8),
+          Text(
+            'Optional: Aktiviere Roboflow-Erkennung. Ohne API Key wird die lokale Erkennung genutzt.',
+            style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
+          ),
+          const SizedBox(height: 10),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Native AI-Erkennung (Dartsmind)'),
+            value: settings.useNativeAI,
+            onChanged: settings.setUseNativeAI,
+            activeColor: AppColors.primary,
+            subtitle: const Text('Verwendet die gleiche KI wie Dartsmind für höchste Genauigkeit'),
+          ),
+          const SizedBox(height: 10),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Roboflow-Erkennung nutzen'),
+            value: settings.useRoboflow,
+            onChanged: settings.setUseRoboflow,
+            activeColor: AppColors.primary,
+            subtitle: const Text('Bei aktivierter Option wird Roboflow-API abgefragt'),
+          ),
+          const SizedBox(height: 8),
+          _buildTextField(
+            label: 'Roboflow API Key',
+            initialValue: settings.roboflowApiKey,
+            onChanged: settings.setRoboflowApiKey,
+            enabled: settings.useRoboflow,
+          ),
+          const SizedBox(height: 8),
+          _buildTextField(
+            label: 'Roboflow Endpoint (URL)',
+            initialValue: settings.roboflowEndpoint,
+            onChanged: settings.setRoboflowEndpoint,
+            enabled: settings.useRoboflow,
+          ),
+        ]),
+      ),
+    );
+  }
+
+  Widget _buildTextField({
+    required String label,
+    required String initialValue,
+    required Future<void> Function(String) onChanged,
+    bool enabled = true,
+  }) {
+    return TextField(
+      enabled: enabled,
+      controller: TextEditingController(text: initialValue),
+      decoration: InputDecoration(
+        labelText: label,
+        border: const OutlineInputBorder(),
+        isDense: true,
+      ),
+      style: const TextStyle(fontSize: 14),
+      onChanged: onChanged,
     );
   }
 
