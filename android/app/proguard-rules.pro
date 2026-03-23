@@ -11,5 +11,8 @@
 -dontwarn com.google.android.play.core.splitinstall.**
 -dontwarn com.google.android.play.core.tasks.**
 
+## TensorFlow Lite GPU (transitiv referenziert, aber nicht im Projekt vorhanden)
+-dontwarn org.tensorflow.lite.gpu.**
+
 ## Keep annotations
 -keepattributes *Annotation*
