@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
-import 'dart:typed_data';
 import 'dart:math' as math;
 import 'package:flutter/services.dart';
 import '../models/dart_throw.dart';

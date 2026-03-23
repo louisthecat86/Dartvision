@@ -87,11 +87,6 @@ class _CameraScreenState extends State<CameraScreen>
     if (cal != null) _detector.setCalibration(cal);
   }
 
-  Future<void> _loadCalibration() async {
-    final cal = context.read<SettingsProvider>().boardCalibration;
-    if (cal != null) _detector.setCalibration(cal);
-  }
-
   Future<void> _initCamera() async {
     try {
       final cameras = await availableCameras();
