@@ -42,7 +42,6 @@ class ImageConverterService {
   }) {
     try {
       final image = img.Image(width: width, height: height);
-      final uvPixelStride = 1;
 
       final uvWidth = width ~/ 2;
       final uvHeight = height ~/ 2;

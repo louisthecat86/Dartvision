@@ -155,7 +155,7 @@ void main() {
     test('double in blocks first non-double throw', () {
       final game = makeGame(doubleIn: true);
       final player = game.players.first;
-      // Player has no score yet (totalScore == 0 based on allThrows)
+      // Player has no score yet (scoreRemaining == startScore)
       final dart = DartThrow.manual(20, RingType.singleOuter);
       final result = ScoreCalculator.processX01Throw(player, dart, game);
 
@@ -335,3 +335,6 @@ void main() {
     });
   });
 }
+
+
+
