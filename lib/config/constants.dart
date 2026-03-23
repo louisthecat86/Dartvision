@@ -73,14 +73,24 @@ enum RingType {
   }
 
   static RingType fromString(String s) {
-    switch (s.toLowerCase()) {
+    // Unterstützt sowohl enum .name (camelCase) als auch Legacy-Format (snake_case)
+    switch (s) {
+      case 'double_':
       case 'double': return RingType.double_;
       case 'triple': return RingType.triple;
+      case 'singleInner':
       case 'single_inner': return RingType.singleInner;
+      case 'singleOuter':
       case 'single_outer': return RingType.singleOuter;
+      case 'outerBull':
       case 'outer_bull': return RingType.outerBull;
+      case 'innerBull':
       case 'inner_bull': return RingType.innerBull;
+      case 'miss': return RingType.miss;
       default: return RingType.miss;
     }
   }
 }
+
+
+

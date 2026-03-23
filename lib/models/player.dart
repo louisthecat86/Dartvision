@@ -68,13 +68,14 @@ class Player {
 
   double get average {
     if (rounds.isEmpty) return 0;
-    final completedRounds = rounds.where((r) => r.length == 3).length;
-    if (completedRounds == 0) return 0;
-    final completedScore = rounds
-        .where((r) => r.length == 3)
+    // Zähle alle abgeschlossenen Runden: entweder 3 Darts oder Bust (1 Miss)
+    final completedRounds = rounds.where((r) =>
+        r.length == 3 || (r.length == 1 && r.first.ring == RingType.miss)).toList();
+    if (completedRounds.isEmpty) return 0;
+    final completedScore = completedRounds
         .expand((r) => r)
         .fold(0, (int sum, t) => sum + t.score);
-    return completedScore / completedRounds;
+    return completedScore / completedRounds.length;
   }
 
   /// 3-dart-average (standard in darts)
@@ -136,3 +137,6 @@ class Player {
     currentTarget = 1;
   }
 }
+
+
+

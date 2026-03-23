@@ -42,12 +42,12 @@ class ImageConverterService {
   }) {
     try {
       final image = img.Image(width: width, height: height);
+      final uvPixelStride = 1;
 
       final uvWidth = width ~/ 2;
       final uvHeight = height ~/ 2;
       final yPlaneSize = width * height;
       final uvPlaneSize = uvWidth * uvHeight;
-      final uvOffset = yPlaneSize;
 
       for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
@@ -56,9 +56,14 @@ class ImageConverterService {
 
           final uvX = x ~/ 2;
           final uvY = y ~/ 2;
-          final uvIdx = uvOffset + (uvY * uvWidth + uvX);
-          final uVal = yuvData[uvIdx];
-          final vVal = yuvData[uvOffset + uvPlaneSize + uvIdx - uvOffset];
+          final uvLinearIdx = uvY * uvWidth + uvX;
+          final uIdx = yPlaneSize + uvLinearIdx;
+          final vIdx = yPlaneSize + uvPlaneSize + uvLinearIdx;
+
+          if (uIdx >= yuvData.length || vIdx >= yuvData.length) continue;
+
+          final uVal = yuvData[uIdx];
+          final vVal = yuvData[vIdx];
 
           // YUV 420 → RGB
           final r = (yVal + 1.402 * (vVal - 128)).clamp(0, 255).toInt();
@@ -78,3 +83,6 @@ class ImageConverterService {
     }
   }
 }
+
+
+

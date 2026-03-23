@@ -22,6 +22,7 @@ class DartEditSheet extends StatefulWidget {
 
 class _DartEditSheetState extends State<DartEditSheet> {
   late List<_EditableDart> _darts;
+  static const int _maxDarts = 3;
 
   @override
   void initState() {
@@ -73,13 +74,14 @@ class _DartEditSheetState extends State<DartEditSheet> {
                   ),
                 ),
                 const Spacer(),
-                // Add dart button
-                IconButton(
-                  onPressed: _addDart,
-                  icon: const Icon(Icons.add_circle_outline,
-                      color: AppColors.primary),
-                  tooltip: 'Dart hinzufügen',
-                ),
+                // Add dart button (max 3)
+                if (_darts.length < _maxDarts)
+                  IconButton(
+                    onPressed: _addDart,
+                    icon: const Icon(Icons.add_circle_outline,
+                        color: AppColors.primary),
+                    tooltip: 'Dart hinzufügen',
+                  ),
               ],
             ),
           ),
@@ -418,6 +420,7 @@ class _DartEditSheetState extends State<DartEditSheet> {
   }
 
   void _addDart() {
+    if (_darts.length >= _maxDarts) return;
     setState(() {
       _darts.add(_EditableDart(
         index: _darts.length,
@@ -470,3 +473,6 @@ class _EditableDart {
     required this.confidence,
   });
 }
+
+
+

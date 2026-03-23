@@ -12,11 +12,62 @@ class GameProvider extends ChangeNotifier {
   GameState? _game;
   String? _lastMessage;
 
+  /// Undo-Stack: speichert Snapshots von Spieler-Zuständen vor jedem Wurf.
+  final List<_UndoSnapshot> _undoStack = [];
+  static const int _maxUndoDepth = 30;
+
   GameState? get game => _game;
   String? get lastMessage => _lastMessage;
 
   bool get hasActiveGame =>
       _game != null && _game!.status == GameStatus.playing;
+
+  /// Speichert einen Snapshot des kompletten Spielzustands vor einem Wurf.
+  void _pushUndoSnapshot() {
+    if (_game == null) return;
+    final g = _game!;
+    _undoStack.add(_UndoSnapshot(
+      playerIndex: g.currentPlayerIndex,
+      dartInRound: g.currentDartInRound,
+      lastMessage: _lastMessage,
+      shanghaiRound: g.shanghaiCurrentRound,
+      bobs27Double: g.bobs27CurrentDouble,
+      highScoreRound: g.highScoreCurrentRound,
+      doubleTrainingCurrent: g.doubleTrainingCurrent,
+      currentLeg: g.currentLeg,
+      currentSet: g.currentSet,
+      status: g.status,
+      winnerId: g.winnerId,
+      playerSnapshots: g.players.map((p) => _PlayerSnapshot.fromPlayer(p)).toList(),
+    ));
+    if (_undoStack.length > _maxUndoDepth) {
+      _undoStack.removeAt(0);
+    }
+  }
+
+  /// Stellt den letzten Snapshot wieder her.
+  bool _popUndoSnapshot() {
+    if (_undoStack.isEmpty || _game == null) return false;
+    final snap = _undoStack.removeLast();
+    final g = _game!;
+
+    g.currentPlayerIndex = snap.playerIndex;
+    g.currentDartInRound = snap.dartInRound;
+    _lastMessage = snap.lastMessage;
+    g.shanghaiCurrentRound = snap.shanghaiRound;
+    g.bobs27CurrentDouble = snap.bobs27Double;
+    g.highScoreCurrentRound = snap.highScoreRound;
+    g.doubleTrainingCurrent = snap.doubleTrainingCurrent;
+    g.currentLeg = snap.currentLeg;
+    g.currentSet = snap.currentSet;
+    g.status = snap.status;
+    g.winnerId = snap.winnerId;
+
+    for (int i = 0; i < g.players.length && i < snap.playerSnapshots.length; i++) {
+      snap.playerSnapshots[i].restoreToPlayer(g.players[i]);
+    }
+    return true;
+  }
 
   // ─────────────── Start Game ───────────────
 
@@ -67,6 +118,7 @@ class GameProvider extends ChangeNotifier {
 
     _game!.addEvent('Spiel gestartet: $gameType');
     _lastMessage = null;
+    _undoStack.clear();
     notifyListeners();
   }
 
@@ -74,6 +126,9 @@ class GameProvider extends ChangeNotifier {
 
   void addThrow(DartThrow dart) {
     if (_game == null || _game!.isGameOver) return;
+
+    // Snapshot vor dem Wurf für vollständiges Undo
+    _pushUndoSnapshot();
 
     final player = _game!.currentPlayer;
 
@@ -118,8 +173,24 @@ class GameProvider extends ChangeNotifier {
     final result = ScoreCalculator.processX01Throw(player, dart, _game!);
 
     if (result.bust) {
-      final roundScore = player.currentRoundScore;
-      player.scoreRemaining += roundScore;
+      // Bust = Score auf Rundenstart zurücksetzen.
+      // Problem: currentRoundScore zählt auch noScore-Darts (Double-In),
+      // deren Score nie abgezogen wurde. Stattdessen: Rundenstart-Score
+      // aus dem Undo-Stack lesen (Snapshot VOR dem 1. Dart dieser Runde).
+      final playerIdx = _game!.players.indexOf(player);
+      final roundDartCount = player.rounds.last.length;
+      int scoreAtRoundStart = player.scoreRemaining; // Fallback
+
+      // Snapshot vor dem ersten Dart dieser Runde finden
+      final snapIdx = _undoStack.length - roundDartCount - 1;
+      if (snapIdx >= 0 &&
+          playerIdx >= 0 &&
+          playerIdx < _undoStack[snapIdx].playerSnapshots.length) {
+        scoreAtRoundStart =
+            _undoStack[snapIdx].playerSnapshots[playerIdx].scoreRemaining;
+      }
+
+      player.scoreRemaining = scoreAtRoundStart;
       player.rounds.last.clear();
       player.rounds.last.add(DartThrow.miss());
       _lastMessage = result.message;
@@ -197,14 +268,15 @@ class GameProvider extends ChangeNotifier {
     }
 
     if (cutThroat && result.pointsAdded > 0 && result.segment != null) {
-      // In Cut Throat, points go to OTHER players
+      // In Cut Throat, points go to OTHER players who haven't closed the segment
       for (final p in _game!.players) {
         if (p.id != player.id &&
             (p.cricketMarks[result.segment!] ?? 0) < 3) {
           p.cricketPoints += result.pointsAdded;
         }
       }
-    } else {
+    } else if (!cutThroat && result.pointsAdded > 0) {
+      // Standard Cricket: Punkte gehen an den werfenden Spieler
       player.cricketPoints += result.pointsAdded;
     }
 
@@ -359,13 +431,23 @@ class GameProvider extends ChangeNotifier {
         // Check if only one player alive
         final alive =
             _game!.players.where((p) => p.killerLives > 0).toList();
-        if (alive.length == 1) {
-          _finishGame(alive.first);
+        if (alive.length <= 1) {
+          if (alive.isNotEmpty) {
+            _finishGame(alive.first);
+          } else {
+            // Alle eliminiert (theoretischer Edge-Case) — letzter Werfer gewinnt
+            _finishGame(player);
+          }
           return;
         }
         if (player.killerLives <= 0) {
           // Skip to next alive player
-          _nextPlayer(skipDead: true);
+          if (player.rounds.last.length < 3) {
+            // Runde nicht voll, aber Spieler tot → sofort weiter
+            _nextPlayer(skipDead: true);
+          } else {
+            _nextPlayer(skipDead: true);
+          }
           return;
         }
       }
@@ -385,9 +467,8 @@ class GameProvider extends ChangeNotifier {
     // Check if the dart hit the target double
     final hitTarget = dart.ring == RingType.double_ &&
         dart.segment == targetDouble;
-    // Or bullseye for target 25
-    final hitBull = targetDouble == 25 &&
-        (dart.ring == RingType.innerBull || dart.ring == RingType.outerBull);
+    // Bullseye (Inner Bull = D25) für target 25 — Outer Bull ist kein Double
+    final hitBull = targetDouble == 25 && dart.ring == RingType.innerBull;
 
     if (hitTarget || hitBull) {
       player.bobs27Score += dart.score;
@@ -399,13 +480,13 @@ class GameProvider extends ChangeNotifier {
       // Did player hit target double at all this round?
       final anyHit = player.rounds.last.any((d) {
         if (targetDouble == 25) {
-          return d.ring == RingType.innerBull || d.ring == RingType.outerBull;
+          return d.ring == RingType.innerBull;
         }
         return d.ring == RingType.double_ && d.segment == targetDouble;
       });
 
       if (!anyHit) {
-        // Lose double the target's value
+        // Penalty = Wert des Double-Felds (D1=2, D20=40, Bull=50)
         final penalty = targetDouble == 25 ? 50 : targetDouble * 2;
         player.bobs27Score -= penalty;
         _game!.addEvent(
@@ -530,6 +611,10 @@ class GameProvider extends ChangeNotifier {
         next = (next + 1) % _game!.players.length;
         attempts++;
       }
+      // Falls alle tot: beim aktuellen Index bleiben (Spiel sollte beendet sein)
+      if (attempts >= _game!.players.length) {
+        return;
+      }
     }
 
     _game!.currentPlayerIndex = next;
@@ -600,110 +685,18 @@ class GameProvider extends ChangeNotifier {
 
   // ─────────────── Actions ───────────────
 
+  /// Snapshot-basiertes Undo: stellt den kompletten Spielzustand vor dem
+  /// letzten Wurf wieder her. Funktioniert zuverlässig für ALLE 11 Modi,
+  /// inklusive Around the Clock, Killer, Bob's 27, etc.
   void undoLastThrow() {
-    if (_game == null || _game!.isGameOver) return;
+    if (_game == null) return;
+    // Auch bei GameOver erlauben (falls letzter Wurf das Spiel beendete)
+    if (_undoStack.isEmpty) return;
 
-    final player = _game!.currentPlayer;
-    if (player.rounds.isEmpty) return;
-
-    final currentRound = player.rounds.last;
-    if (currentRound.isEmpty) {
-      if (player.rounds.length <= 1 && _game!.currentPlayerIndex == 0) return;
-
-      player.rounds.removeLast();
-      final prevIndex = _game!.currentPlayerIndex == 0
-          ? _game!.players.length - 1
-          : _game!.currentPlayerIndex - 1;
-      _game!.currentPlayerIndex = prevIndex;
-
-      final prevPlayer = _game!.currentPlayer;
-      if (prevPlayer.rounds.isNotEmpty && prevPlayer.rounds.last.isNotEmpty) {
-        final lastThrow = prevPlayer.rounds.last.removeLast();
-        _reverseThrowScore(prevPlayer, lastThrow);
-      }
-    } else {
-      final lastThrow = currentRound.removeLast();
-      _reverseThrowScore(player, lastThrow);
-    }
-
-    _lastMessage = 'Letzter Wurf rückgängig';
-    _game!.addEvent('Undo');
-    notifyListeners();
-  }
-
-  /// Kehrt die Auswirkung eines einzelnen Wurfs auf den Spieler-Score um.
-  void _reverseThrowScore(Player player, DartThrow dart) {
-    switch (_game!.gameType) {
-      case AppConstants.game501:
-      case AppConstants.game301:
-      case AppConstants.game701:
-        player.scoreRemaining += dart.score;
-        break;
-      case AppConstants.gameCricket:
-      case AppConstants.gameCutThroat:
-        _reverseCricketThrow(player, dart);
-        break;
-      case AppConstants.gameShanghai:
-        // Nur Treffer auf das Rundenziel zählen
-        if (dart.segment == _game!.shanghaiCurrentRound) {
-          player.shanghaiScore -= dart.score;
-        }
-        break;
-      case AppConstants.gameHighScore:
-        player.highScoreTotal -= dart.score;
-        break;
-      case AppConstants.gameDoubleTraining:
-        player.doubleAttempts--;
-        final target = _game!.doubleTrainingCurrent;
-        final hit = (target == 25)
-            ? dart.ring == RingType.innerBull
-            : (dart.ring == RingType.double_ && dart.segment == target);
-        if (hit) {
-          player.doubleHits--;
-          player.doublesHit[target] = false;
-        }
-        break;
-      // AroundTheClock, Killer, Bob's27 sind schwer rückgängig zu machen
-      // (Zustandsübergänge), daher nur Dart-Entfernung ohne Score-Korrektur
-      default:
-        break;
-    }
-  }
-
-  /// Cricket-Undo: Marks und ggf. Punkte zurücknehmen.
-  void _reverseCricketThrow(Player player, DartThrow dart) {
-    final targetSegments = [...AppConstants.cricketNumbers, 25];
-    final segment = dart.segment;
-    if (!targetSegments.contains(segment)) return;
-
-    int marksToRemove = 1;
-    if (dart.ring == RingType.double_ || dart.ring == RingType.innerBull) {
-      marksToRemove = 2;
-    } else if (dart.ring == RingType.triple) {
-      marksToRemove = 3;
-    }
-
-    final currentMarks = player.cricketMarks[segment] ?? 0;
-    final previousMarks = (currentMarks - marksToRemove).clamp(0, 99);
-    player.cricketMarks[segment] = previousMarks;
-
-    // Punkte rückrechnen: nur Excess-Marks über 3 brachten Punkte
-    if (currentMarks > 3) {
-      final excessNow = currentMarks - 3;
-      final excessBefore = previousMarks > 3 ? previousMarks - 3 : 0;
-      final pointsToRemove = (excessNow - excessBefore) *
-          (segment == 25 ? 25 : segment);
-
-      if (_game!.gameType == AppConstants.gameCutThroat) {
-        for (final p in _game!.players) {
-          if (p.id != player.id &&
-              (p.cricketMarks[segment] ?? 0) < 3) {
-            p.cricketPoints -= pointsToRemove;
-          }
-        }
-      } else {
-        player.cricketPoints -= pointsToRemove;
-      }
+    if (_popUndoSnapshot()) {
+      _lastMessage = 'Letzter Wurf rückgängig';
+      _game!.addEvent('Undo');
+      notifyListeners();
     }
   }
 
@@ -759,9 +752,9 @@ class GameProvider extends ChangeNotifier {
           continue;
         }
 
-        // Double-In Prüfung
+        // Double-In Prüfung (scoreRemaining == startScore = noch kein gültiger Wurf)
         if (_game!.doubleIn &&
-            player.totalScore == 0 &&
+            simRemaining == _game!.startScore &&
             results.every((r) => r.isNoScore) &&
             !dart.isDouble) {
           results.add(ThrowPreview(
@@ -818,7 +811,7 @@ class GameProvider extends ChangeNotifier {
   /// Gibt eine Zusammenfassung zurück (z.B. Bust, Spieler gewechselt, etc.).
   RoundResult submitRound(List<DartThrow> darts) {
     if (_game == null || _game!.isGameOver) {
-      return const RoundResult(playerBefore: '', scoreBefore: 0, scoreAfter: 0);
+      return RoundResult(playerBefore: '', scoreBefore: 0, scoreAfter: 0);
     }
 
     final playerBefore = _game!.currentPlayer.name;
@@ -907,4 +900,120 @@ class RoundResult {
     this.gameOver = false,
     this.winnerName,
   });
+}
+
+// ─────────────── Undo-Snapshot-System ───────────────
+
+/// Kompletter Snapshot des Spielzustands für Undo.
+class _UndoSnapshot {
+  final int playerIndex;
+  final int dartInRound;
+  final String? lastMessage;
+  final int shanghaiRound;
+  final int bobs27Double;
+  final int highScoreRound;
+  final int doubleTrainingCurrent;
+  final int currentLeg;
+  final int currentSet;
+  final GameStatus status;
+  final String? winnerId;
+  final List<_PlayerSnapshot> playerSnapshots;
+
+  const _UndoSnapshot({
+    required this.playerIndex,
+    required this.dartInRound,
+    required this.lastMessage,
+    required this.shanghaiRound,
+    required this.bobs27Double,
+    required this.highScoreRound,
+    required this.doubleTrainingCurrent,
+    required this.currentLeg,
+    required this.currentSet,
+    required this.status,
+    required this.winnerId,
+    required this.playerSnapshots,
+  });
+}
+
+/// Snapshot aller relevanten Felder eines Spielers.
+class _PlayerSnapshot {
+  final int scoreRemaining;
+  final int legsWon;
+  final int setsWon;
+  final Map<int, int> cricketMarks;
+  final int cricketPoints;
+  final int currentTarget;
+  final int killerSegment;
+  final int killerLives;
+  final bool isKiller;
+  final int shanghaiScore;
+  final int bobs27Score;
+  final int highScoreTotal;
+  final Map<int, bool> doublesHit;
+  final int doubleAttempts;
+  final int doubleHits;
+  final List<List<DartThrow>> rounds;
+
+  const _PlayerSnapshot({
+    required this.scoreRemaining,
+    required this.legsWon,
+    required this.setsWon,
+    required this.cricketMarks,
+    required this.cricketPoints,
+    required this.currentTarget,
+    required this.killerSegment,
+    required this.killerLives,
+    required this.isKiller,
+    required this.shanghaiScore,
+    required this.bobs27Score,
+    required this.highScoreTotal,
+    required this.doublesHit,
+    required this.doubleAttempts,
+    required this.doubleHits,
+    required this.rounds,
+  });
+
+  factory _PlayerSnapshot.fromPlayer(Player p) {
+    return _PlayerSnapshot(
+      scoreRemaining: p.scoreRemaining,
+      legsWon: p.legsWon,
+      setsWon: p.setsWon,
+      cricketMarks: Map<int, int>.from(p.cricketMarks),
+      cricketPoints: p.cricketPoints,
+      currentTarget: p.currentTarget,
+      killerSegment: p.killerSegment,
+      killerLives: p.killerLives,
+      isKiller: p.isKiller,
+      shanghaiScore: p.shanghaiScore,
+      bobs27Score: p.bobs27Score,
+      highScoreTotal: p.highScoreTotal,
+      doublesHit: Map<int, bool>.from(p.doublesHit),
+      doubleAttempts: p.doubleAttempts,
+      doubleHits: p.doubleHits,
+      // Deep-copy der Runden
+      rounds: p.rounds.map((r) => List<DartThrow>.from(r)).toList(),
+    );
+  }
+
+  void restoreToPlayer(Player p) {
+    p.scoreRemaining = scoreRemaining;
+    p.legsWon = legsWon;
+    p.setsWon = setsWon;
+    p.cricketMarks.clear();
+    p.cricketMarks.addAll(cricketMarks);
+    p.cricketPoints = cricketPoints;
+    p.currentTarget = currentTarget;
+    p.killerSegment = killerSegment;
+    p.killerLives = killerLives;
+    p.isKiller = isKiller;
+    p.shanghaiScore = shanghaiScore;
+    p.bobs27Score = bobs27Score;
+    p.highScoreTotal = highScoreTotal;
+    p.doublesHit.clear();
+    p.doublesHit.addAll(doublesHit);
+    p.doubleAttempts = doubleAttempts;
+    p.doubleHits = doubleHits;
+    p.rounds.clear();
+    p.rounds.addAll(rounds.map((r) => List<DartThrow>.from(r)));
+  }
 }

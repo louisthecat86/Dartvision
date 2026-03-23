@@ -13,7 +13,8 @@ class ScoreCalculator {
     final newScore = player.scoreRemaining - dart.score;
 
     // Check double-in requirement
-    if (game.doubleIn && player.totalScore == 0 && !dart.isDouble) {
+    // scoreRemaining == startScore bedeutet: noch kein gültiger Wurf gezählt
+    if (game.doubleIn && player.scoreRemaining == game.startScore && !dart.isDouble) {
       return X01Result(
         valid: true,
         bust: false,
@@ -365,3 +366,6 @@ class AroundTheClockResult {
     this.message,
   });
 }
+
+
+
