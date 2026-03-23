@@ -216,13 +216,11 @@ class _CameraScreenState extends State<CameraScreen>
 
       final newCount = result.darts.length;
       if (newCount > _detectedDarts.length) {
-        final settings = context.read<SettingsProvider>();
         if (settings.vibrationEnabled) {
           final hasVib = await Vibration.hasVibrator();
           if (hasVib == true) Vibration.vibrate(duration: 80);
         }
 
-        final gp = context.read<GameProvider>();
         final previews = gp.previewRound(result.darts);
         final hasBust = previews.any((p) => p.isBust);
 
